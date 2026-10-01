@@ -49,8 +49,18 @@ node src/cli/main.js serve
 ### Updating
 
 ```bash
-oq update           # pull the latest commit
-oq update --check   # report the current version and how far behind it is
+oq update           # pull the latest release
+oq update --check   # compare installed against latest, change nothing
+```
+
+```
+$ oq update --check
+installed  v0.2.1  (34147c2)
+latest     v0.2.2
+
+Update available: v0.2.2 (2 commit(s) away)
+installed v0.2.1, latest v0.2.2.
+Run: oq update
 ```
 
 `oq update` only manages directories it installed — it looks for the
@@ -58,6 +68,26 @@ oq update --check   # report the current version and how far behind it is
 working in, it refuses rather than resetting your tree; use `git pull` there. It
 also refuses to run over uncommitted changes unless you pass `--force`, checks
 that the new tree still parses, and prints a rollback command if it does not.
+
+### Releases
+
+Releases are git tags (`v0.2.2`), and `package.json` carries the same number.
+The tag is what `oq update` compares against.
+
+```bash
+oq release status               # version, latest tag, and whether a release is cut
+oq release patch --push         # 0.2.2 -> 0.2.3
+oq release minor --push         # 0.2.2 -> 0.3.0
+oq release major --push         # 0.2.2 -> 1.0.0
+```
+
+`oq release` bumps the version, commits, tags, and pushes, so a release is one
+command and the tag cannot drift from the manifest. It refuses to tag a version
+that is already tagged, and refuses on a dirty working tree so a tag always
+points at an intentional state.
+
+Use **patch** for wording and fixes, **minor** for new features, **major** for
+a breaking change such as a config format or answer-file shape change.
 
 ## Start
 
