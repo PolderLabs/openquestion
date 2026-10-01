@@ -193,7 +193,7 @@ The stored answer is the option's `value`, never its `label`. Choose stable, mac
 - Every question `id` is unique within the file.
 - Every `single`, `multi`, and `select` question has an `options` array.
 - The manifest entry's `id` and `version` **exactly** match the definition file — the server refuses the save if they drift.
-- The manifest `path` is exactly `questionnaire/questionnaires/<file>.json` and ends in `.json`.
+- The manifest `path` is exactly `questionnaire/questions/<file>.json` and ends in `.json`.
 
 A quick local check before pushing:
 

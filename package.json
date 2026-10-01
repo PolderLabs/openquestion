@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "bin": {
-    "openquestion": "src/cli/main.js"
+    "oq": "src/cli/main.js"
   },
   "main": "src/index.js",
   "exports": {

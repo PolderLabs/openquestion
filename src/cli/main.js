@@ -6,6 +6,12 @@
 // on all return JSON when `--json` is passed.
 
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 
 import { createApp } from "../core/server.js";
 import { createLocalStorage } from "../storage/local.js";
@@ -22,10 +28,21 @@ import {
   saveConfig,
 } from "../projects/registry.js";
 import { answerPath, contentHash } from "../storage/local.js";
-import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 
-const VERSION = "0.1.0";
+const execFileAsync = promisify(execFile);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Read the version from the package rather than hardcoding it, so `oq update`
+// and `oq --version` cannot drift from what was published.
+const VERSION = (() => {
+  try {
+    return JSON.parse(
+      readFileSync(resolve(__dirname, "..", "..", "package.json"), "utf8"),
+    ).version;
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 function out(data) {
   process.stdout.write(JSON.stringify(data, null, 2) + "\n");
@@ -45,17 +62,18 @@ function flag(args, name, fallback = null) {
 }
 
 const help = `
-openquestion ${VERSION} - schema-driven questionnaires
+oq ${VERSION} - schema-driven questionnaires
 
 Usage
-  openquestion serve [--port 4321] [--host 127.0.0.1] [--open]
-  openquestion projects list
-  openquestion projects add <path> [--name <name>] [--git] [--scan <parent>]
-  openquestion projects add <path> --github <owner/name> [--branch main]
-  openquestion projects remove <id>
-  openquestion projects discover <parent>
-  openquestion browse [<path>]
-  openquestion config [--path]
+  oq serve [--port 4321] [--host 127.0.0.1] [--project <path>] [--git]
+  oq projects list
+  oq projects add <path> [--name <name>] [--git] [--scan <parent>]
+  oq projects add <path> --github <owner/name> [--branch main]
+  oq projects remove <id>
+  oq projects discover <parent>
+  oq browse [<path>]
+  oq config
+  oq update [--check]
 
 Every command accepts --json for machine-readable output.
 
@@ -67,6 +85,135 @@ Storage
 Config
   ${configPath()}
 `;
+
+/**
+ * Self-update. Only works for an install created by install.sh, which is a git
+ * checkout: the command pulls the latest ref and re-verifies that the tree is
+ * still parseable. A source checkout someone is working in is left alone unless
+ * they pass --force, because resetting it would discard their work.
+ */
+async function cmdUpdate(args) {
+  const root = installRoot();
+  const gitDir = join(root, ".git");
+
+  if (!existsSync(gitDir)) {
+    return fail(
+      `No git checkout found at ${root}.
+      oq update only works for an install made by install.sh.
+      Re-run the installer to get the latest version.`,
+    );
+  }
+
+  const branch = (await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], root))
+    .trim();
+
+  const status = await run("git", ["status", "--porcelain"], root);
+  if (status.trim()) {
+    if (!args.includes("--force")) {
+      return fail(
+        `${root} has local changes.
+      Commit or stash them first, or re-run with --force to discard.`,
+      );
+    }
+    console.log("Discarding local changes (--force).");
+  }
+
+  const before = (await run("git", ["rev-parse", "HEAD"], root)).trim();
+  const currentVersion = readVersion(root);
+
+  if (args.includes("--check")) {
+    const { stdout } = await run(
+      "git",
+      ["fetch", "origin", branch],
+      root,
+      true,
+    );
+    const behind = (
+      await run("git", ["rev-list", "--count", `HEAD..origin/${branch}`], root, true)
+    ).trim();
+    console.log(`current: ${currentVersion} (${before.slice(0, 7)})`);
+    if (behind === "0") {
+      console.log("up to date");
+    } else {
+      console.log(`${behind} commit(s) behind origin/${branch}`);
+    }
+    return;
+  }
+
+  console.log(`Updating ${root} from origin/${branch}...`);
+  await run("git", ["fetch", "origin", branch], root);
+  await run("git", ["reset", "--hard", `origin/${branch}`], root);
+
+  const after = (await run("git", ["rev-parse", "HEAD"], root)).trim();
+  const nextVersion = readVersion(root);
+
+  // A broken update would leave the user with no working tool, so check before
+  // declaring success.
+  let healthy = true;
+  try {
+    await run("node", ["--check", join(root, "src", "cli", "main.js")], root);
+  } catch {
+    healthy = false;
+  }
+
+  if (!healthy) {
+    return fail(
+      `Updated to ${after.slice(0, 7)} but the CLI failed to parse.
+      Roll back with:
+        git -C ${root} reset --hard ${before}`,
+    );
+  }
+
+  if (before === after) {
+    console.log(`Already up to date (${currentVersion}).`);
+    return;
+  }
+  console.log(`Updated ${currentVersion} -> ${nextVersion} (${after.slice(0, 7)}).`);
+  const log = await run(
+    "git",
+    ["log", "--oneline", `${before}..${after}`],
+    root,
+    true,
+  );
+  if (log.trim()) {
+    console.log("\nChanges:");
+    for (const line of log.trim().split("\n").slice(0, 15)) {
+      console.log("  " + line);
+    }
+  }
+}
+
+/** The install root: two levels up from this file (src/cli -> root). */
+function installRoot() {
+  return resolve(__dirname, "..", "..");
+}
+
+function readVersion(root) {
+  try {
+    return JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+  } catch {
+    return "unknown";
+  }
+}
+
+async function run(bin, argv, cwd, allowFailure = false) {
+  try {
+    const { stdout } = await execFileAsync(bin, argv, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return stdout;
+  } catch (error) {
+    if (allowFailure) return "";
+    fail(
+      `\`${bin} ${argv.join(" ")}\` failed in ${cwd}: ${
+        String(error.stderr || error.message).trim()
+      }`,
+    );
+    return "";
+  }
+}
 
 async function cmdServe(args) {
   const port = Number(flag(args, "--port", process.env.OPENQUESTION_PORT || 4321));
@@ -106,11 +253,11 @@ async function cmdServe(args) {
         projects.push(...list);
       })
       .finally(() => {
-        console.log(`openquestion ${VERSION}`);
+        console.log(`oq ${VERSION}`);
         console.log(`  http://${host}:${port}`);
         if (projects.length === 0) {
           console.log("  no projects yet - add one:");
-          console.log(`    openquestion projects add ~/code/my-project`);
+          console.log(`    oq projects add ~/code/my-project`);
         } else {
           console.log(`  projects: ${projects.map((p) => p.name).join(", ")}`);
         }
@@ -259,6 +406,8 @@ async function main() {
       return cmdBrowse(args);
     case "config":
       return cmdConfig(args);
+    case "update":
+      return cmdUpdate(args);
     case "--version":
     case "-v":
       return console.log(VERSION);
