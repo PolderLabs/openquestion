@@ -855,18 +855,19 @@
     await loadSaved();
   });
 
-  ui.railToggle.addEventListener("click", () => {
+  // The rail has one state, not two independent toggles. The previous code added
+  // `rail-open` without clearing `rail-collapsed`, so reopening left the grid
+  // column at 0 and the rail translated off-screen: collapsed, but unable to
+  // come back.
+  function setRail(open) {
     const app = document.querySelector(".app");
-    app.classList.remove("rail-open");
-    app.classList.add("rail-collapsed");
-    ui.railOpen.hidden = false;
-  });
-  ui.railOpen.addEventListener("click", () => {
-    const app = document.querySelector(".app");
-    app.classList.remove("rail-collapsed");
-    app.classList.add("rail-open");
-    ui.railOpen.hidden = true;
-  });
+    app.classList.toggle("rail-collapsed", !open);
+    app.classList.toggle("rail-open", open);
+    ui.railOpen.hidden = open;
+  }
+
+  ui.railToggle.addEventListener("click", () => setRail(false));
+  ui.railOpen.addEventListener("click", () => setRail(true));
 
   ui.questions.addEventListener("input", (event) => collect(event.target));
   ui.questions.addEventListener("change", (event) => collect(event.target));

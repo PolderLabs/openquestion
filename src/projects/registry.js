@@ -10,7 +10,7 @@
 // A project always has a local root. GitHub is optional and adds a second,
 // remote-backed view of the same questionnaires.
 
-import { readFile, writeFile, mkdir, readdir, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, stat, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
 import { homedir } from "node:os";
@@ -193,6 +193,86 @@ export async function listDirectories(path) {
     parent: target === "/" ? null : resolve(target, ".."),
     directories,
   };
+}
+
+// Directories that are never worth descending into. They are large, they never
+// contain a project, and walking them turns a search into a disk-thrashing
+// crawl.
+const SKIP_DIRECTORIES = new Set([
+  "node_modules", "dist", "build", "out", "target", "vendor",
+  ".git", ".cache", ".venv", "venv", "__pycache__",
+  "coverage", ".next", ".nuxt", ".svelte-kit", "tmp",
+]);
+
+// Depth is deliberately capped. A project is normally a checkout one or two
+// levels below where someone keeps their code, and recursing without a bound
+// turns a search into a full-disk scan.
+const SEARCH_MAX_DEPTH = 2;
+const SEARCH_MAX_RESULTS = 200;
+
+/**
+ * Finds project directories under `root`, at most SEARCH_MAX_DEPTH levels deep.
+ * Returns candidates with a depth, so the UI can show "nested one level" and
+ * rank shallower hits first.
+ */
+export async function searchProjects(root, { maxDepth = SEARCH_MAX_DEPTH } = {}) {
+  const start = resolve(root);
+  if (!(await isDirectory(start))) return [];
+
+  const found = [];
+  const queue = [{ path: start, depth: 0 }];
+
+  while (queue.length > 0 && found.length < SEARCH_MAX_RESULTS) {
+    const current = queue.shift();
+    let entries;
+    try {
+      entries = await readdir(current.path, { withFileTypes: true });
+    } catch {
+      // An unreadable directory should not abort the whole search.
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      if (entry.name.startsWith(".")) continue;
+      if (SKIP_DIRECTORIES.has(entry.name)) continue;
+
+      const full = join(current.path, entry.name);
+      // A symlink could point back up the tree; resolve it and only follow it
+      // if it lands inside the search root, so the walk cannot loop.
+      let real = full;
+      if (entry.isSymbolicLink()) {
+        try {
+          real = await realpath(full);
+        } catch {
+          continue;
+        }
+        if (!real.startsWith(start)) continue;
+      }
+
+      if (looksLikeProject(real)) {
+        found.push({
+          id: projectId(entry.name) || entry.name,
+          name: entry.name,
+          path: real,
+          depth: current.depth + 1,
+          isProject: true,
+        });
+        if (found.length >= SEARCH_MAX_RESULTS) break;
+        // Keep descending: a monorepo is often a project in its own right and
+        // also contains projects of its own (a/b). Stopping at the first hit
+        // would hide them.
+      }
+
+      if (current.depth + 1 < maxDepth) {
+        queue.push({ path: real, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return found.sort(
+    (a, b) => a.depth - b.depth || a.name.localeCompare(b.name),
+  );
 }
 
 export { CONFIG_DIR, looksLikeProject, projectId, normalizeProject };

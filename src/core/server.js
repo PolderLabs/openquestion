@@ -16,7 +16,9 @@ import {
   addProject,
   removeProject,
   listDirectories,
+  searchProjects,
 } from "../projects/registry.js";
+import { resolve } from "node:path";
 import {
   AuthError,
   NotFoundError,
@@ -271,6 +273,25 @@ async function handleApi(req, res, url, session) {
   // Directory browser for the "add project" picker.
   if (req.method === "GET" && path === "/api/directories") {
     sendJson(res, 200, await listDirectories(url.searchParams.get("path")));
+    return;
+  }
+
+  // Bounded search for the picker. Depth-capped on the server so a request can
+  // never turn into a full-disk walk.
+  if (req.method === "GET" && path === "/api/search") {
+    const root = url.searchParams.get("root");
+    if (!root) {
+      throw new ValidationError("A root directory is required.", "invalid_path");
+    }
+    const query = (url.searchParams.get("q") || "").trim().toLowerCase();
+    const matches = await searchProjects(root);
+
+    // Filter here as well as in the UI so a large result set does not have to
+    // cross the wire to be discarded.
+    const filtered = query
+      ? matches.filter((m) => m.name.toLowerCase().includes(query))
+      : matches;
+    sendJson(res, 200, { root: resolve(root), results: filtered });
     return;
   }
 

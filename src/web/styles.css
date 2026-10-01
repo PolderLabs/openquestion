@@ -80,8 +80,13 @@ a {
   grid-template-columns: 0 minmax(0, 1fr);
 }
 
+/* Collapsing sets the column to 0, but the rail's own children still lay out at
+   their natural width and spill over the content unless the rail clips them.
+   Without this the "show sidebar" button ends up underneath the hide button. */
 .app.rail-collapsed .rail {
   transform: translateX(-100%);
+  overflow: hidden;
+  visibility: hidden;
 }
 
 /* ---------- left rail ---------- */
@@ -389,6 +394,12 @@ a {
   color: var(--subtle);
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease;
+}
+
+/* The icon sits on top of the button box; without this it swallows the
+   click, so the control looks present but does nothing. */
+.icon-button svg {
+  pointer-events: none;
 }
 
 .icon-button:hover {
