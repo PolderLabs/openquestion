@@ -478,6 +478,89 @@ a {
   overflow-y: auto;
 }
 
+/* ---------- dashboard ---------- */
+
+.dash {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+}
+
+.dash-head h1 {
+  margin: 0 0 5px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.dash-head p {
+  margin: 0 0 24px;
+  color: var(--subtle);
+  font-size: 13.5px;
+}
+
+.dash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dash-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.dash-card:hover {
+  border-color: var(--line-strong, #3a3a44);
+  background: var(--surface-2);
+}
+
+.dash-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dash-card-name {
+  font-size: 14.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.dash-card-badge {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  color: var(--subtle);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dash-card-path {
+  color: var(--subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.dash-card-note {
+  color: var(--subtle);
+  font-size: 11px;
+}
+
+/* ---------- empty state ---------- */
+
 .empty {
   display: flex;
   flex-direction: column;

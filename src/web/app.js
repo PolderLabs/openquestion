@@ -11,7 +11,8 @@
     "rail", "railToggle", "railOpen", "projectList", "projectEmpty",
     "addProjectBtn", "modeLocal", "modeGithub", "identityInput",
     "statusDot", "statusText", "crumbProject", "crumbQuestionnaire",
-    "questionnaireSelect", "saveBtn", "content", "emptyState", "sheet",
+    "questionnaireSelect", "saveBtn", "content", "dash", "dashList",
+    "emptyState", "sheet",
     "qVersion", "qTitle", "qDescription", "progress", "progressPercent",
     "progressFill", "progressDetail", "toc", "questions",
     "savebar", "saveState", "saveTarget", "reloadBtn", "saveBarBtn",
@@ -96,18 +97,71 @@
 
   // ---------- projects ----------
 
+  /**
+   * The dashboard. Shown when no project is selected: every configured project
+   * as a card, with enough detail to pick the right one without leaving the
+   * page. Choosing a project here is the same action as clicking it in the rail.
+   */
+  function renderDashboard() {
+    const list = ui.dashList;
+    list.replaceChildren();
+
+    if (state.projects.length === 0) {
+      showEmpty();
+      return;
+    }
+
+    for (const project of state.projects) {
+      const card = document.createElement("button");
+      card.className = "dash-card";
+      card.type = "button";
+
+      const head = document.createElement("div");
+      head.className = "dash-card-head";
+
+      const name = document.createElement("span");
+      name.className = "dash-card-name";
+      name.textContent = project.name;
+
+      const badge = document.createElement("span");
+      badge.className = "dash-card-badge";
+      badge.textContent = project.storage === "github" ? "GitHub" : "Local";
+      head.append(name, badge);
+
+      const path = document.createElement("span");
+      path.className = "dash-card-path";
+      path.textContent = project.root;
+
+      card.append(head, path);
+
+      if (project.commitOnWrite) {
+        const note = document.createElement("span");
+        note.className = "dash-card-note";
+        note.textContent = "Saves commit to git";
+        card.append(note);
+      }
+
+      card.addEventListener("click", () => selectProject(project.id));
+      list.append(card);
+    }
+  }
+
+  /** Decide which of dash / empty / sheet is on screen. */
+  function renderMain() {
+    ui.dash.hidden = Boolean(state.projectId) || state.projects.length === 0;
+    ui.emptyState.hidden = Boolean(state.projectId) || state.projects.length > 0;
+    ui.sheet.hidden = !state.questionnaire;
+    ui.savebar.hidden = !state.questionnaire;
+  }
+
   async function loadProjects() {
     const { projects } = await api("/api/projects");
     state.projects = projects;
-
-    if (!state.projectId && projects.length > 0) {
-      // Prefer a project that already has a manifest, so the first run shows
-      // something useful instead of an error.
-      const usable = projects.find((p) => p.storage === "local") || projects[0];
-      state.projectId = usable.id;
-    }
-
+    // No auto-select: the dashboard shows every project, and picking one is the
+    // user's call. This also means the server does not have to guess a default.
     renderProjects();
+    renderDashboard();
+    renderMain();
     return projects;
   }
 
@@ -141,6 +195,8 @@
     state.questionnaire = null;
     state.manifest = null;
     renderProjects();
+    renderDashboard();
+    renderMain();
     await loadManifest();
   }
 
@@ -350,7 +406,15 @@
   // ---------- rendering ----------
 
   function showEmpty(message) {
+    // Only meaningful when a project is selected but has nothing to show.
+    // With no project selected the dashboard is the right view.
+    if (!state.projectId) {
+      renderDashboard();
+      renderMain();
+      return;
+    }
     ui.sheet.hidden = true;
+    ui.dash.hidden = true;
     ui.emptyState.hidden = false;
     ui.savebar.hidden = true;
     ui.questions.replaceChildren();
@@ -363,9 +427,7 @@
     const questionnaire = state.questionnaire;
     if (!questionnaire) return showEmpty();
 
-    ui.emptyState.hidden = true;
-    ui.sheet.hidden = false;
-    ui.savebar.hidden = false;
+    renderMain();
     ui.qVersion.textContent = questionnaire.id + " · v" + questionnaire.version;
     ui.qTitle.textContent = questionnaire.title;
     ui.qDescription.textContent = questionnaire.description || "";
@@ -798,19 +860,15 @@
   async function start() {
     setStatus("Starting…", "busy");
     try {
+      // Land on the dashboard. No project is opened until one is chosen, so the
+      // server has no default to guess and the choice stays with the user.
       await loadProjects();
-      if (state.projectId) {
-        await loadManifest();
-        const first = ui.questionnaireSelect.value;
-        if (first) await openQuestionnaire(first);
-      } else {
-        showEmpty(
-          state.projects.length === 0
-            ? "Add a project from the sidebar to get started."
-            : "Pick a project from the sidebar.",
-        );
+
+      if (state.projects.length === 0) {
         setStatus("No projects", "error");
+        return;
       }
+      setStatus("Ready", "ok");
     } catch (error) {
       setStatus("Failed", "error");
       showEmpty(error.message);

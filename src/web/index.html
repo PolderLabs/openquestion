@@ -87,9 +87,18 @@
       </header>
 
       <div class="content" id="content">
-        <section class="empty" id="emptyState">
-          <h1>No questionnaire open</h1>
-          <p>Pick a project and a questionnaire from the sidebar to start answering.</p>
+        <!-- Dashboard: shown until a project is chosen. -->
+        <section class="dash" id="dash" hidden>
+          <header class="dash-head">
+            <h1>Projects</h1>
+            <p>Pick a project to answer its questionnaires.</p>
+          </header>
+          <div class="dash-list" id="dashList"></div>
+        </section>
+
+        <section class="empty" id="emptyState" hidden>
+          <h1>No project open</h1>
+          <p>Pick a project from the sidebar, or add one with the + button.</p>
         </section>
 
         <section class="sheet" id="sheet" hidden>

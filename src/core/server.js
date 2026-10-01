@@ -322,13 +322,11 @@ async function handleApi(req, res, url, session) {
   let project = projectId ? await getProject(projectId) : null;
 
   if (path === "/api/manifest" || path === "/api/questionnaire" || path === "/api/answers") {
-    if (!project) {
-      const projects = await listProjects();
-      project = projects[0] || null;
-    }
+    // No implicit fallback to the first project. Guessing here would silently
+    // serve the wrong project's answers, so the client must name one.
     if (!project) {
       throw new NotFoundError(
-        "No projects configured. Add one with `openquestion projects add <path>`.",
+        "No project selected. Pass ?project=<id> from the projects list.",
       );
     }
   }

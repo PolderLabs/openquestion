@@ -2,8 +2,8 @@
 // openquestion CLI.
 //
 // Everything is scriptable so a local agent can drive the tool without opening a
-// browser: `openquestion projects add`, `openquestion answer --set k=v`, and so
-// on all return JSON when `--json` is passed.
+// browser. Project management, discovery, and the config file are all reachable
+// from the command line, and every command emits JSON with `--json`.
 
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
@@ -317,7 +317,7 @@ async function cmdProjects(args) {
     if (args.includes("--json")) return out({ projects });
     if (projects.length === 0) {
       console.log("No projects configured.");
-      console.log("Add one: openquestion projects add <path>");
+      console.log("Add one: oq projects add <path>");
       return;
     }
     for (const p of projects) {
@@ -332,7 +332,7 @@ async function cmdProjects(args) {
 
   if (sub === "add") {
     const path = args[1];
-    if (!path) return fail("Usage: openquestion projects add <path>");
+    if (!path) return fail("Usage: oq projects add <path>");
     const root = path.replace(/^~(?=$|\/)/, process.env.HOME);
     if (!existsSync(root)) return fail(`No such directory: ${root}`);
 
@@ -378,7 +378,7 @@ async function cmdProjects(args) {
 
   if (sub === "remove") {
     const id = args[1];
-    if (!id) return fail("Usage: openquestion projects remove <id>");
+    if (!id) return fail("Usage: oq projects remove <id>");
     await removeProject(id);
     if (args.includes("--json")) return out({ ok: true, removed: id });
     console.log(`Removed ${id}`);
@@ -417,6 +417,14 @@ async function cmdConfig(args) {
 
 async function main() {
   const argv = process.argv.slice(2);
+
+  // Bare `oq` starts the server. The dashboard lists every configured project,
+  // so the command needs no project argument and does not care which directory
+  // it was run from.
+  if (argv.length === 0) {
+    return cmdServe([]);
+  }
+
   const [command, ...args] = argv;
 
   switch (command) {
