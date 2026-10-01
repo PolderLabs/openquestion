@@ -222,16 +222,19 @@ const SEARCH_MAX_RESULTS = 200;
 export async function searchProjects(root, { maxDepth = SEARCH_MAX_DEPTH } = {}) {
   const start = resolve(root);
   if (!(await isDirectory(start))) return [];
-  return collectProjects(start, maxDepth);
+  return (await collectEntries(start, maxDepth, false)).filter(
+    (item) => item.isProject,
+  );
 }
 
-// Shared by searchProjects and the suggestion index, which differs only in how
-// deep it looks and whether it needs the depth recorded.
-async function collectProjects(start, maxDepth) {
-  const found = [];
+// Shared by searchProjects and the picker's index: the same bounded walk, told
+// whether to record plain folders as well as projects.
+async function collectEntries(start, maxDepth, includeFolders) {
+  const found = new Map();
+  const limit = includeFolders ? INDEX_MAX_ENTRIES : SEARCH_MAX_RESULTS;
   const queue = [{ path: start, depth: 0 }];
 
-  while (queue.length > 0 && found.length < SEARCH_MAX_RESULTS) {
+  while (queue.length > 0 && found.size < limit) {
     const current = queue.shift();
     let entries;
     try {
@@ -259,15 +262,20 @@ async function collectProjects(start, maxDepth) {
         if (!real.startsWith(start)) continue;
       }
 
-      if (looksLikeProject(real)) {
-        found.push({
-          id: projectId(entry.name) || entry.name,
-          name: entry.name,
-          path: real,
-          depth: current.depth + 1,
-          isProject: true,
-        });
-        if (found.length >= SEARCH_MAX_RESULTS) break;
+      const isProject = looksLikeProject(real);
+      if (isProject || includeFolders) {
+        // Keyed by path, so a directory that is both a project and a folder is
+        // listed once and as the project, which is the row the user can act on.
+        if (isProject || !found.has(real)) {
+          found.set(real, {
+            id: projectId(entry.name) || entry.name,
+            name: entry.name,
+            path: real,
+            depth: current.depth + 1,
+            isProject,
+          });
+        }
+        if (found.size >= limit) break;
         // Keep descending: a monorepo is often a project in its own right and
         // also contains projects of its own (a/b). Stopping at the first hit
         // would hide them.
@@ -279,27 +287,36 @@ async function collectProjects(start, maxDepth) {
     }
   }
 
-  return found.sort(
+  return [...found.values()].sort(
     (a, b) => a.depth - b.depth || a.name.localeCompare(b.name),
   );
 }
 
-// The suggestion index looks a little deeper than the picker search, because
-// the whole point is to find something without knowing where it lives. It is
-// still bounded, and still skips the directories that hold thousands of files.
+// The picker index looks a little deeper than the picker search, because the
+// whole point is to find something without knowing where it lives. It is still
+// bounded, and still skips the directories that hold thousands of files.
 const SUGGEST_MAX_DEPTH = 3;
 
+// Unlike SEARCH_MAX_RESULTS, which caps what the user is shown, this caps the
+// index itself. A home directory is a few hundred folders deep, so this is a
+// runaway guard rather than a number anyone should ever reach.
+const INDEX_MAX_ENTRIES = 2000;
+
 /**
- * A cached list of project directories under a root folder, used to offer
- * suggestions as they type. Defaults to the user's home, but the user can
- * travel into any folder, so the cache is keyed by root rather than global.
+ * A cached index of the directories under a root folder: every subfolder plus
+ * the ones that are projects. The picker matches typed text against it, so a
+ * folder and a project are found the same way. Defaults to the user's home,
+ * but the user can travel into any folder, so the cache is keyed by root.
  */
 const suggestionCache = new Map();
 const SUGGESTION_TTL_MS = 60_000;
 
-export async function suggestProjects(root) {
+export async function suggestEntries(root, maxDepth = SUGGEST_MAX_DEPTH) {
   const start = resolve(root || homedir());
-  const cached = suggestionCache.get(start);
+  // Browsing a folder and searching inside it want different depths, so they
+  // are indexed and cached separately rather than evicting each other.
+  const key = `${start}::${maxDepth}`;
+  const cached = suggestionCache.get(key);
   const now = Date.now();
   if (cached && now - cached.at < SUGGESTION_TTL_MS) {
     return cached.items;
@@ -307,11 +324,11 @@ export async function suggestProjects(root) {
   if (!(await isDirectory(start))) return [];
 
   const t0 = Date.now();
-  const items = await collectProjects(start, SUGGEST_MAX_DEPTH);
-  suggestionCache.set(start, { at: now, items });
+  const items = await collectEntries(start, maxDepth, true);
+  suggestionCache.set(key, { at: now, items });
   if (AUTH_TRACE) {
     console.log(
-      `[projects] indexed ${items.length} project(s) under ${start} in ${Date.now() - t0}ms`,
+      `[projects] indexed ${items.length} director${items.length === 1 ? "y" : "ies"} under ${start} (depth ${maxDepth}) in ${Date.now() - t0}ms`,
     );
   }
   return items;

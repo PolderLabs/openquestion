@@ -9,6 +9,57 @@ The version follows semantic versioning:
 - **minor** — new features, additive changes
 - **major** — breaking changes, such as a config or answer-file format change
 
+## v0.4.0
+
+### Added
+
+- A Settings dialog, opened from the sidebar, with three sections: **Projects**
+  (where the picker starts looking), **Answering** (the label that names the
+  answer file) and **About** (version, config path, update hint). Everything is
+  written to `projects.json`, so it survives a restart.
+- The picker lists folders and projects as one list, and typing filters both.
+  A directory that is a project is listed once, as the project.
+- Every result shows the folder it sits in, which is what tells two same-named
+  results apart and where a nested match actually lives.
+- `Add project` adds the folder you are in when nothing is selected, so
+  choosing a directory and adding it is a single action. A folder does not have
+  to contain a questionnaire to be added, and one without any shows an empty
+  project instead of a red error.
+- `Tab` completes the highlighted entry: it opens a folder, or fills in a
+  project's name and leaves that row selected for `Enter`.
+- `Up`/`Down` move through the list. The keyboard and the mouse drive the same
+  list and the same selection.
+
+### Changed
+
+- Search answers from a local cache first and cancels the request a new
+  keystroke replaces. A new query paints in under 50ms, a repeated one in 0ms.
+- The picker starts in the home directory again. The projects folder is now
+  only changed from Settings, never by adding a project.
+- A query of three characters or fewer has to match as a real substring. As a
+  subsequence, two letters matched nearly everything and the list stopped
+  narrowing as you typed.
+- `/api/settings` carries the answering label and reports the config path and
+  version, and accepts `null` for a key to clear it.
+
+### Fixed
+
+- Selecting a project and pressing "Add project" did nothing. The picker wrote
+  the chosen path to its element map but read it back from its state, so the add
+  ran with no path and returned silently.
+- "Add project" and "Cancel" defaulted to `submit` inside the dialog form, which
+  closed the dialog and discarded instead of running their handlers.
+- Searching matched the absolute path, so a common prefix such as
+  `/home/you/code` made almost everything match any query. Matching now uses the
+  path below the root.
+- The highlighted row was restored by looking the new list up in itself, so it
+  jumped to whatever re-ranked into that position.
+- Adding a project remembered the project itself as the folder to reopen in, so
+  the next search started inside the project that had just been added.
+- `/api/directories` did not expand a leading `~`, so a path pasted into the
+  picker or typed into Settings failed unless it was absolute.
+- Clearing a setting was ignored, so the "Home" button kept the old folder.
+
 ## v0.3.0
 
 ### Added

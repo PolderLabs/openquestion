@@ -6,6 +6,7 @@
 
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 
@@ -16,9 +17,10 @@ import {
   removeProject,
   listDirectories,
   searchProjects,
-  suggestProjects,
+  suggestEntries,
   loadConfig,
   saveConfig,
+  configPath,
 } from "../projects/registry.js";
 import { join, dirname, extname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -37,6 +39,18 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = join(__dirname, "..", "web");
+
+// Read the version from the package rather than hardcoding it, so the About
+// panel and `oq --version` cannot drift apart.
+const VERSION = (() => {
+  try {
+    return JSON.parse(
+      readFileSync(join(__dirname, "..", "..", "package.json"), "utf8"),
+    ).version;
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 const BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const SESSION_COOKIE = "oq_session";
@@ -284,35 +298,39 @@ async function handleApi(req, res, url, session) {
     return;
   }
 
-  // Directory browser for the "add project" picker.
+  // Directory browser for the "add project" picker. A leading ~ is expanded
+  // here as well as in /api/suggest, because paths pasted into the picker or
+  // typed into settings start life as shell-style text.
   if (req.method === "GET" && path === "/api/directories") {
-    sendJson(res, 200, await listDirectories(url.searchParams.get("path")));
+    sendJson(res, 200, await listDirectories(expandHome(url.searchParams.get("path") || "")));
     return;
   }
 
-  // Suggestions for the picker. The root is whatever the user is currently
-  // looking at, so it starts at their home folder and can be moved into any
-  // subfolder they travel into. Cached per root, so it is cheap after the first
-  // call.
+  /**
+   * Entries for the picker.
+   *
+   * One ordered list of folders and projects, not two lists the client has to
+   * merge and rank itself. Folders and projects are both filtered by the query,
+   * because a list that does not change as you type reads as broken.
+   *
+   * With no query this lists what is directly in this folder, which is what
+   * makes the picker browsable. With a query it matches everything below the
+   * root, so a name is found wherever it lives.
+   */
   if (req.method === "GET" && path === "/api/suggest") {
     const root = expandHome(url.searchParams.get("root") || "");
-    const all = await suggestProjects(root || undefined);
+    const base = root || homedir();
     const query = (url.searchParams.get("q") || "").trim();
-    const limit = Math.min(Number(url.searchParams.get("limit") || 8) || 8, 40);
-    const results = query ? filterSuggestions(all, query, limit) : all.slice(0, limit);
-    // The immediate children, so the user can step into a folder rather than
-    // being limited to whatever the index happened to find below the root.
-    const folders = (await listDirectories(root || undefined)).directories.map(
-      (dir) => ({ name: dir.name, path: dir.path, isProject: dir.isProject }),
-    );
+    const limit = Math.min(Number(url.searchParams.get("limit") || 30) || 30, 100);
+
+    const entries = query
+      ? filterEntries(toEntries(await suggestEntries(base)), query, limit, base)
+      : toEntries(await suggestEntries(base, 1)).slice(0, limit);
+
     sendJson(res, 200, {
-      // `root` is what was searched; `homeDir` is always the real home, so the
-      // UI can abbreviate the label and know when "up" should stop.
-      root: root || homedir(),
+      root: base,
       homeDir: homedir(),
-      total: all.length,
-      results,
-      folders,
+      entries,
     });
     return;
   }
@@ -334,13 +352,21 @@ async function handleApi(req, res, url, session) {
     return;
   }
 
-  // Persisted UI settings. Only the projects folder is stored today; it is
-  // remembered so the picker reopens where the user last worked, and it is
-  // never used to auto-add anything without an explicit pick.
+  /**
+   * Settings that outlive the tab. The picker reads the projects folder to know
+   * where to start looking, and the answer file needs a name, so both are
+   * stored next to the projects they belong to.
+   *
+   * A stored folder is only a starting point. Nothing is ever added from it
+   * without the user picking it in the dialog.
+   */
   if (req.method === "GET" && path === "/api/settings") {
     const config = await loadConfig();
     sendJson(res, 200, {
       defaultProjectDir: config.settings?.defaultProjectDir || null,
+      identity: config.settings?.identity || session.identity || null,
+      configPath: configPath(),
+      version: VERSION,
     });
     return;
   }
@@ -349,11 +375,29 @@ async function handleApi(req, res, url, session) {
     const body = await readBody(req);
     const config = await loadConfig();
     config.settings = config.settings || {};
-    if (typeof body.defaultProjectDir === "string") {
+    // null is how the UI says "clear this". Ignoring it would make a reset
+    // silently keep the old value, which is worse than having no reset at all.
+    if (body.defaultProjectDir === null) {
+      config.settings.defaultProjectDir = null;
+    } else if (typeof body.defaultProjectDir === "string") {
       config.settings.defaultProjectDir = body.defaultProjectDir.trim() || null;
     }
+    if (body.identity === null) {
+      config.settings.identity = null;
+      session.identity = null;
+    } else if (typeof body.identity === "string") {
+      const identity = body.identity.trim().slice(0, 64) || null;
+      config.settings.identity = identity;
+      // Applied to this session too, so saving it does not need a second call
+      // to take effect behind the dialog that just closed.
+      session.identity = identity;
+    }
     await saveConfig(config);
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, {
+      ok: true,
+      defaultProjectDir: config.settings.defaultProjectDir || null,
+      identity: config.settings.identity || null,
+    });
     return;
   }
 
@@ -547,9 +591,9 @@ function expandHome(value) {
 }
 
 /**
- * Subsequence match, shared with the client so a suggestion and a search result
- * rank the same way. Consecutive characters and word starts score higher, so
- * "gfq" finds "globalfrontio".
+ * Subsequence match, used for both picker suggestions and search results so
+ * they rank the same way. Consecutive characters and word starts score higher,
+ * so "gfq" finds "globalfrontio".
  */
 function fuzzyScore(text, needle) {
   const haystack = String(text).toLowerCase();
@@ -572,19 +616,51 @@ function fuzzyScore(text, needle) {
   return score;
 }
 
-function filterSuggestions(items, query, limit) {
+/** An indexed directory, in the shape the picker's single list expects. */
+function toEntries(items) {
+  return items.map((item) => ({
+    kind: item.isProject ? "project" : "folder",
+    name: item.name,
+    path: item.path,
+    parent: item.path.replace(/\/[^/]*$/, ""),
+  }));
+}
+
+/**
+ * Path relative to the root. Matching uses this rather than the absolute path,
+ * because otherwise a common prefix like /home/me/code matches everything the
+ * user types and the list stops filtering.
+ */
+function relativeTo(root, path) {
+  return path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
+}
+
+/**
+ * Fuzzy-filters entries, ranking exact name matches first.
+ *
+ * A short query has to appear as a real substring. As a subsequence two letters
+ * match almost everything ("te" hits every path with a "t" and an "e"
+ * somewhere), and a list that does not narrow as you type reads as broken.
+ * Longer queries keep the subsequence match, which is what lets "gfq" find
+ * "globalfrontio".
+ */
+function filterEntries(entries, query, limit, root) {
+  const needle = query.toLowerCase();
+  const contiguous = needle.length <= 3;
   const scored = [];
-  for (const item of items) {
-    // Match the visible name, and also the trailing path segment, so typing
-    // "projects" can surface a project whose name does not contain it.
-    const score = Math.max(
-      fuzzyScore(item.name, query),
-      fuzzyScore(item.path, query) / 2,
-    );
-    if (score > 0) scored.push({ item, score });
+  for (const entry of entries) {
+    // The name is the primary signal; the path below the root is a weaker
+    // fallback so typing a folder name still surfaces what is inside it.
+    const below = relativeTo(root, entry.path).toLowerCase();
+    const name = entry.name.toLowerCase();
+    if (contiguous && !name.includes(needle) && !below.includes(needle)) {
+      continue;
+    }
+    const score = Math.max(fuzzyScore(name, needle), fuzzyScore(below, needle) / 2);
+    if (score > 0) scored.push({ entry, score });
   }
-  scored.sort((a, b) => b.score - a.score || a.item.depth - b.item.depth);
-  return scored.slice(0, limit).map((entry) => entry.item);
+  scored.sort((a, b) => b.score - a.score || a.entry.name.localeCompare(b.entry.name));
+  return scored.slice(0, limit).map((item) => item.entry);
 }
 
 export { sessions, respondentFor, fuzzyScore };

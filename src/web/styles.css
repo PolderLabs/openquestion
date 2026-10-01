@@ -1282,14 +1282,49 @@ a {
   cursor: not-allowed;
 }
 
-/* Folders are navigation, not results, so they read differently from a
-   project: a chevron instead of a path, and no filled dot. */
-.picker-item.is-folder {
+.picker-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 8px 0 0 2px;
+  color: var(--subtle);
+  font-size: 10.5px;
+}
+
+.picker-hint kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* The keyboard highlight, so what Enter would pick is always visible. */
+.picker-item.is-active {
+  border-color: var(--line-strong, #3a3a44);
+  background: var(--surface-3);
   color: var(--text);
 }
 
-.picker-item.is-folder:hover {
-  background: var(--surface-2);
+.picker-item.is-active.is-folder {
+  color: var(--text);
+}
+
+/* A selected project is distinct from the keyboard highlight: this one is
+   staged for saving. */
+.picker-item.is-picked {
+  border-color: rgba(122, 162, 247, 0.5);
+  background: var(--accent-soft);
+  color: var(--text);
 }
 
 .picker-chevron {
@@ -1437,9 +1472,10 @@ a {
 }
 
 .picker-list {
-  max-height: 220px;
+  max-height: 320px;
   overflow-y: auto;
   padding: 4px;
+  overscroll-behavior: contain;
 }
 
 .picker-empty {
@@ -1530,6 +1566,111 @@ a {
   .savebar {
     flex-wrap: wrap;
     gap: 8px;
+  }
+}
+
+/* ---------- settings ---------- */
+
+.settings-card {
+  width: min(620px, 92vw);
+}
+
+.settings-body {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 20px;
+  margin-top: 14px;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.settings-tab {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-tab:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.settings-tab.is-active {
+  background: var(--surface-3);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.settings-pane h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-pane .field-note {
+  margin: 0 0 10px;
+}
+
+/* The pane reuses the picker field layout, which is styled for a dialog header
+   and would otherwise draw a border inside the dialog. */
+.settings-pane .picker-path {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.settings-pane .picker-path .input {
+  flex: 1;
+}
+
+.about-list {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 12px;
+}
+
+.about-list > div {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.about-list dt {
+  width: 72px;
+  color: var(--subtle);
+  font-size: 12px;
+}
+
+.about-list dd {
+  margin: 0;
+  font-size: 12.5px;
+  word-break: break-all;
+}
+
+@media (max-width: 620px) {
+  .settings-body {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
   }
 }
 

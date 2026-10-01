@@ -20,7 +20,10 @@
     "projectDialog", "defaultDirBrowse", "defaultDirStatus", "projectSearch",
     "pickerBack", "pickerRoot",
     "searchResults", "browseBlock", "pickerPath", "pickerUp", "pickerList",
-    "projectGit", "projectSave", "toastDialog", "toastTitle", "toastBody",
+    "projectGit", "projectSave", "projectCancel", "toastDialog", "toastTitle", "toastBody",
+    "settingsBtn", "settingsDialog", "settingsClose", "settingsSave",
+    "settingsDir", "settingsDirReset", "settingsDirStatus", "settingsIdentity",
+    "aboutVersion", "aboutConfig", "aboutProjects",
   ]) {
     ui[id] = el(id);
   }
@@ -36,11 +39,13 @@
     comments: {},
     remoteSha: null,
     dirty: false,
-    // Picker state, kept across opens so the projects folder is remembered.
+    // Where the picker starts looking. Null means the home folder; it is only
+    // ever changed from the settings dialog.
     defaultProjectDir: null,
-    searchRoot: null,
-    subfolders: null,
-    homeDir: null,
+    configPath: "",
+    version: "",
+    // All live picker state, in one place. The picker rebuilds this on open.
+    picker: { root: null, home: null, entries: [], index: 0, loaded: false },
     pickedPath: null,
     selectedQuestionnaire: null,
     selectOptions: [],
@@ -252,7 +257,17 @@
     } catch (error) {
       state.manifest = null;
       renderManifest();
-      setStatus("No manifest", "error");
+      // A project can be a folder that holds no questionnaire yet, so a missing
+      // manifest is an empty project rather than a failure to report.
+      if (error.status === 404) {
+        setStatus("No questionnaires yet", "ok");
+        showEmpty(
+          (project ? project.name : "This project") + " has no questionnaires yet.\n" +
+          "Add questionnaire/manifest.json to it and reopen the project.",
+        );
+        return;
+      }
+      setStatus("Could not load the manifest", "error");
       showEmpty(error.message);
     }
   }
@@ -917,187 +932,337 @@
   }
 
   // ---------- project picker ----------
+  //
+  // One model: the server returns a single ordered list of entries, each either a
+  // folder to travel into or a project to add. The UI keeps exactly one list and
+  // one highlighted index, so keyboard and mouse always agree about what is
+  // selected. Everything the user can reach is in that list, which is what makes
+  // Tab and Enter predictable.
 
-  // Suggestions come from the folder you are currently in. That starts at your
-  // home directory, and each result row can be clicked to travel into a
-  // subfolder, so the search is not stuck at the top.
   function openPicker() {
+    cancelPickerRequest();
+    state.picker = {
+      root: state.defaultProjectDir || null,
+      home: null,
+      entries: [],
+      index: 0,
+      loaded: false,
+    };
     state.pickedPath = null;
-    state.searchRoot = state.defaultProjectDir || null;
-    state.subfolders = null;
-    // Recomputed on open, so a session that travelled somewhere does not carry
-    // that folder into the next open.
-    state.homeDir = null;
-    ui.projectSave.disabled = true;
+    syncAddButton();
     ui.browseBlock.hidden = true;
     ui.browseBlock.open = false;
     ui.projectSearch.value = "";
     ui.searchResults.replaceChildren();
     ui.projectDialog.showModal();
     ui.projectSearch.focus();
-    runSearch();
+    refreshPicker();
   }
 
   function setPickerNote(text) {
     ui.defaultDirStatus.textContent = text;
   }
 
-  /** Shows the current root, with home abbreviated so it stays readable. */
-  function renderRoot() {
-    const home = (state.homeDir || "").replace(/\/$/, "");
-    const root = state.searchRoot || home;
-    ui.pickerRoot.textContent = shortRoot(root);
-    ui.pickerRoot.title = root;
-    // Home is the floor: there is nowhere above it to go.
-    ui.pickerBack.disabled = !state.searchRoot || root === home;
-  }
-
-  let searchTimer = null;
-
+  // A keystroke paints from the cache immediately and only then goes to the
+  // server, so a query that has been typed before costs nothing and a new one
+  // costs one short, cancellable request. The delay is just long enough to
+  // swallow a burst of typing into a single request.
+  let pickerTimer = null;
   function onSearchInput() {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(runSearch, 120);
+    clearTimeout(pickerTimer);
+    const typed = ui.projectSearch.value.trim();
+    const cached = suggestCache.get((state.picker.root || "") + "\n" + typed);
+    if (cached) applyPickerResult(cached, typed, null);
+    pickerTimer = setTimeout(refreshPicker, 45);
   }
 
-  async function runSearch() {
+  // One request in flight at a time, plus recent answers kept per root and
+  // query. Together they make typing feel local: a keystroke that repeats a
+  // query answers instantly, and one that does not cancels the request it
+  // replaces rather than racing it onto the screen.
+  let pickerRequest = null;
+  const suggestCache = new Map();
+  const SUGGEST_CACHE_LIMIT = 60;
+
+  function cancelPickerRequest() {
+    if (pickerRequest) {
+      pickerRequest.abort();
+      pickerRequest = null;
+    }
+  }
+
+  /** Home is the floor: the abbreviated label is relative to it. */
+  function displayRoot(root) {
+    const home = (state.picker.home || "").replace(/\/$/, "");
+    if (!root) return "~";
+    if (root === home) return "~";
+    return home && root.startsWith(home + "/")
+      ? "~" + root.slice(home.length)
+      : root;
+  }
+
+  function renderPickerHeader() {
+    const root = state.picker.root;
+    ui.pickerRoot.textContent = displayRoot(root);
+    ui.pickerRoot.title = root || "";
+    ui.pickerBack.disabled = !root || !state.picker.home || root === state.picker.home;
+  }
+
+  /**
+   * Loads entries for the current root and query.
+   *
+   * An empty query lists what is in this folder, which is what makes the picker
+   * browsable: you can walk the tree without knowing any path. A query switches
+   * to matching everything below the root, and both folders and projects are
+   * filtered by the server.
+   *
+   * `selectPath` keeps a specific entry highlighted across the reload, which is
+   * how Tab lands on the row it just completed instead of the first match.
+   */
+  async function refreshPicker(selectPath) {
     const typed = ui.projectSearch.value.trim();
 
-    // A pasted path is a location, not a name to filter by. Navigating there is
-    // what makes a full path pasted from a shell or a config file work.
+    // A pasted path is a location, not a search term. Handling it here means a
+    // path copied from a shell or a config file works the moment it is pasted.
     if (typed.includes("/")) {
-      setPickerNote("Checking…");
       try {
         const listing = await api("/api/directories?path=" + encodeURIComponent(typed));
-        await enterFolder(listing.path, { clearField: true });
-        return;
+        if (ui.projectSearch.value.trim() !== typed) return;
+        state.picker.root = listing.path;
+        state.picker.index = 0;
+        ui.projectSearch.value = "";
+        state.pickedPath = null;
+        // Fall through to the normal load for the new root.
+        return refreshPicker();
       } catch {
-        // Not a folder. Fall through and treat it as a search term.
+        // Not a directory, so search for it as a name instead.
       }
     }
 
     const query = typed;
-    setPickerNote("Searching…");
-    try {
-      const params = new URLSearchParams({ q: query, limit: "8" });
-      if (state.searchRoot) params.set("root", state.searchRoot);
-      const result = await api("/api/suggest?" + params.toString());
-
-      // `root` is whatever we searched; `homeDir` is the real home and must only
-      // be set once. Overwriting it with the current root is what made every
-      // folder after the first display as "~" with the back button disabled.
-      if (!state.homeDir) state.homeDir = result.homeDir || result.root;
-      state.subfolders = result.folders || [];
-      renderRoot();
-
-      // A late response must not overwrite what the user has since typed.
-      if (ui.projectSearch.value.trim() !== query) return;
-
-      renderSearchResults(result.results, query);
-      const inRoot = result.total;
-      if (result.results.length === 0 && state.subfolders.length === 0) {
-        setPickerNote(
-          query
-            ? "Nothing here. Try fewer letters, or step into a folder below."
-            : "No projects in this folder. Step into a subfolder below, or up.",
-        );
-      } else if (query) {
-        setPickerNote(
-          result.results.length + " of " + inRoot + " in " + shortRoot(result.root),
-        );
-      } else {
-        setPickerNote(inRoot + " project" + (inRoot === 1 ? "" : "s") + " in " + shortRoot(result.root));
-      }
-    } catch (error) {
-      setPickerNote(error.message);
-      renderSearchResults([], query);
-    }
-  }
-
-  function shortRoot(root) {
-    const home = (state.homeDir || "").replace(/\/$/, "");
-    return home && root.startsWith(home) ? "~" + root.slice(home.length) : root;
-  }
-
-  /** Travel into a subfolder and search from there. */
-  async function enterFolder(path, { clearField = false } = {}) {
-    state.searchRoot = path;
-    state.pickedPath = null;
-    if (clearField) ui.projectSearch.value = "";
-    ui.projectSave.disabled = true;
-    await runSearch();
-  }
-
-  async function goUp() {
-    if (!state.searchRoot || !state.homeDir) return;
-    if (state.searchRoot === state.homeDir) return;
-    const parent =
-      state.searchRoot.replace(/\/+$/, "").split("/").slice(0, -1).join("/") ||
-      "/";
-    await enterFolder(parent);
-  }
-
-
-  function renderSearchResults(items, query) {
-    ui.searchResults.replaceChildren();
-
-    // Subfolders come first, so it is obvious the search is not limited to the
-    // current level: click one to search inside it.
-    for (const folder of state.subfolders || []) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "picker-item is-folder";
-      const dot = document.createElement("span");
-      dot.className = "dot";
-      const name = document.createElement("span");
-      name.className = "picker-label";
-      highlightMatch(name, folder.name, query);
-      const chevron = document.createElement("span");
-      chevron.className = "picker-chevron";
-      chevron.textContent = "›";
-      button.append(dot, name, chevron);
-      button.addEventListener("click", () => enterFolder(folder.path));
-      ui.searchResults.append(button);
-    }
-
-    if (items.length === 0 && (state.subfolders || []).length === 0) {
-      if (!state.searchRoot) return;
-      const empty = document.createElement("p");
-      empty.className = "picker-empty";
-      empty.textContent = "Nothing here.";
-      ui.searchResults.append(empty);
+    const key = (state.picker.root || "") + "\n" + query;
+    const cached = suggestCache.get(key);
+    if (cached) {
+      applyPickerResult(cached, query, selectPath);
       return;
     }
 
-    for (const item of items) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className =
-        "picker-item is-project" + (item.path === state.pickedPath ? " is-picked" : "");
-      button.setAttribute("role", "option");
-      button.setAttribute("aria-selected", String(item.path === state.pickedPath));
+    const params = new URLSearchParams({ q: query, limit: "30" });
+    if (state.picker.root) params.set("root", state.picker.root);
 
-      const dot = document.createElement("span");
-      dot.className = "dot";
-      const label = document.createElement("span");
-      label.className = "picker-label";
-      highlightMatch(label, item.name, query);
-      const path = document.createElement("span");
-      path.className = "picker-sub";
-      // The immediate parent, not the whole path: two projects can share a
-      // name, and the folder that distinguishes them is the one that matters.
-      path.textContent = item.path.replace(/\/[^/]*$/, "");
+    // The first keystroke has nothing to wait for, so the field never looks dead.
+    if (suggestCache.size === 0) setPickerNote("Searching…");
 
-      button.append(dot, label, path);
-      button.addEventListener("click", () => {
-        state.pickedPath = item.path;
-        ui.projectSave.disabled = false;
-        renderSearchResults(items, query);
+    cancelPickerRequest();
+    const controller = new AbortController();
+    pickerRequest = controller;
+
+    let result;
+    try {
+      result = await api("/api/suggest?" + params.toString(), {
+        signal: controller.signal,
       });
-      ui.searchResults.append(button);
+    } catch (error) {
+      // Superseded by a newer keystroke, which is not a failure to report.
+      if (error.name === "AbortError") return;
+      if (ui.projectSearch.value.trim() !== query) return;
+      state.picker.entries = [];
+      state.picker.loaded = true;
+      renderPickerList("");
+      setPickerNote(error.message);
+      return;
+    } finally {
+      if (pickerRequest === controller) pickerRequest = null;
+    }
+
+    if (ui.projectSearch.value.trim() !== query) return;
+    suggestCache.set(key, result);
+    if (suggestCache.size > SUGGEST_CACHE_LIMIT) {
+      suggestCache.delete(suggestCache.keys().next().value);
+    }
+    applyPickerResult(result, query, selectPath);
+  }
+
+  /** Paints one response: the rows, the header, the note, and what is selected. */
+  function applyPickerResult(result, query, selectPath) {
+    if (!state.picker.home) state.picker.home = result.homeDir;
+    // The root the server actually searched, so "the folder you are in" is a
+    // real path even when the picker opened on the home folder.
+    state.picker.root = result.root;
+    // Remember the highlighted path before the list is replaced, otherwise the
+    // new list is searched for an entry taken from the new list and the
+    // highlight jumps to whatever now sits at that position.
+    const keep = selectPath || state.picker.entries[state.picker.index]?.path;
+    state.picker.entries = result.entries || [];
+    state.picker.loaded = true;
+    const at = keep
+      ? state.picker.entries.findIndex((entry) => entry.path === keep)
+      : -1;
+    state.picker.index = at === -1 ? 0 : at;
+
+    renderPickerHeader();
+    renderPickerList(query);
+    syncAddButton();
+
+    // What Add project will add is spelled out, because a highlighted row and a
+    // selected one look alike and a dead button is all the user would see.
+    const highlighted = currentEntry();
+    const hint = state.pickedPath
+      ? "Press Add project to confirm."
+      : highlighted && highlighted.kind === "project"
+        ? "Press Enter to select it. Add project adds this folder."
+        : "Add project adds this folder.";
+    if (state.picker.entries.length === 0) {
+      setPickerNote(
+        (query
+          ? "Nothing here. Try fewer letters, or press ‹ to go up."
+          : "Nothing in this folder. Press ‹ to go up.") + " " + hint,
+      );
+    } else {
+      setPickerNote(
+        state.picker.entries.length +
+          (query ? " match" + (state.picker.entries.length === 1 ? "" : "es") : " item" + (state.picker.entries.length === 1 ? "" : "s")) +
+          " in " +
+          displayRoot(result.root) + ". " +
+          hint,
+      );
     }
   }
 
-  /** Marks the matched characters so the user can see why a row matched. */
+  function currentEntry() {
+    return state.picker.entries[state.picker.index] || null;
+  }
+
+  function renderPickerList(query) {
+    ui.searchResults.replaceChildren();
+
+    for (const [position, entry] of state.picker.entries.entries()) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "picker-item" + (entry.kind === "project" ? " is-project" : " is-folder");
+      row.setAttribute("role", "option");
+      const active = position === state.picker.index;
+      row.setAttribute("aria-selected", String(active));
+      if (active) row.classList.add("is-active");
+
+      const dot = document.createElement("span");
+      dot.className = "dot";
+
+      const label = document.createElement("span");
+      label.className = "picker-label";
+      highlightMatch(label, entry.name, query);
+
+      // The folder the result sits in. Two same-named results in different
+      // folders are told apart by exactly this, and it is the only clue about
+      // where a nested match actually lives.
+      const path = document.createElement("span");
+      path.className = "picker-sub";
+      const inRoot = entry.parent === state.picker.root;
+      path.textContent = inRoot
+        ? entry.kind === "project" ? "project" : "folder"
+        : displayRoot(entry.parent) || entry.path;
+
+      row.append(dot, label, path);
+      row.addEventListener("click", () => {
+        state.picker.index = position;
+        activateEntry();
+      });
+      row.addEventListener("mouseenter", () => {
+        state.picker.index = position;
+        paintPickerHighlight();
+      });
+      ui.searchResults.append(row);
+    }
+  }
+
+  function paintPickerHighlight() {
+    const rows = [...ui.searchResults.querySelectorAll(".picker-item")];
+    rows.forEach((row, position) => {
+      const active = position === state.picker.index;
+      row.classList.toggle("is-active", active);
+      row.setAttribute("aria-selected", String(active));
+    });
+  }
+
+  /**
+   * What Enter and clicking a row both do: a folder is travelled into, a
+   * project is selected. One function, so the two can never disagree.
+   *
+   * Travelling also makes that folder addable, because "I picked a directory
+   * and cannot add it" is not a state this dialog should ever be in.
+   */
+  function activateEntry() {
+    const entry = currentEntry();
+    if (!entry) return;
+
+    if (entry.kind === "folder") {
+      state.picker.root = entry.path;
+      state.picker.index = 0;
+      ui.projectSearch.value = "";
+      state.pickedPath = null;
+      refreshPicker();
+      return;
+    }
+
+    state.pickedPath = entry.path;
+    syncAddButton();
+    paintPickerHighlight();
+    setPickerNote("Selected " + entry.name + ". Press Add project to confirm.");
+  }
+
+  /**
+   * Add project is enabled whenever there is something to add: the project that
+   * was picked, or the folder the picker is currently in.
+   */
+  function syncAddButton() {
+    ui.projectSave.disabled = !addablePath();
+  }
+
+  /** The path Add project would add right now. */
+  function addablePath() {
+    return state.pickedPath || state.picker.root || ui.pickerPath.value.trim() || "";
+  }
+
+  /**
+   * Tab completes the highlighted entry into the field. On a folder that means
+   * going there, because completing a location is navigating to it. Repeated
+   * Tab walks down the list, so every entry is reachable without the mouse.
+   */
+  async function onSearchKeydown(event) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (state.picker.entries.length === 0) return;
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const count = state.picker.entries.length;
+      state.picker.index = (state.picker.index + delta + count) % count;
+      paintPickerHighlight();
+      ui.searchResults.children[state.picker.index]?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+
+    if (event.key === "Tab" && !event.shiftKey) {
+      if (state.picker.entries.length === 0) return;
+      event.preventDefault();
+      const entry = currentEntry();
+      if (!entry) return;
+      if (entry.kind === "folder") {
+        activateEntry();
+      } else {
+        // A project is a leaf, so completing it fills the name and leaves that
+        // exact row highlighted, ready for Enter to select it.
+        ui.projectSearch.value = entry.name;
+        await refreshPicker(entry.path);
+      }
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      activateEntry();
+    }
+  }
+
+  /** Marks the characters that matched, so a fuzzy hit is explainable. */
   function highlightMatch(container, text, query) {
     const needle = (query || "").toLowerCase();
     if (!needle) {
@@ -1123,12 +1288,21 @@
     }
   }
 
+  async function goUpPicker() {
+    const { root, home } = state.picker;
+    if (!root || !home || root === home) return;
+    state.picker.root = root.replace(/\/+$/, "").split("/").slice(0, -1).join("/") || "/";
+    state.picker.index = 0;
+    ui.projectSearch.value = "";
+    refreshPicker();
+  }
   async function browseInto(path) {
     setStatus("Browsing…", "busy");
     try {
       const listing = await api("/api/directories" + (path ? "?path=" + encodeURIComponent(path) : ""));
       ui.pickerPath.value = listing.path;
       ui.pickerUp.disabled = !listing.parent;
+      syncAddButton();
       ui.pickerList.replaceChildren();
 
       if (listing.directories.length === 0) {
@@ -1161,9 +1335,9 @@
   }
 
   async function addSelectedProject() {
-    // A picked suggestion wins; otherwise the manually browsed path is used,
-    // which is how a folder that is not a project can still be added.
-    const path = state.pickedPath || ui.pickerPath.value.trim();
+    // The picked project wins; otherwise the folder the picker is in, so that
+    // selecting a directory and pressing Add does what it looks like.
+    const path = addablePath();
     if (!path) return;
     setStatus("Adding…", "busy");
     try {
@@ -1174,8 +1348,6 @@
           commitOnWrite: ui.projectGit.checked,
         }),
       });
-      // Remember the folder so the next search starts from the same place.
-      await saveDefaultDir(path);
       ui.projectDialog.close();
       await loadProjects();
       await selectProject(project.id);
@@ -1185,26 +1357,82 @@
     }
   }
 
-  async function saveDefaultDir(path) {
-    try {
-      await api("/api/settings", {
-        method: "POST",
-        body: JSON.stringify({ defaultProjectDir: path }),
-      });
-    } catch {
-      // A failure to remember the folder is not worth blocking the add.
+  /**
+   * Writes settings and keeps the local copy in step with the server. The
+   * projects folder is only where the picker starts looking; nothing here ever
+   * adds a project on its own.
+   */
+  async function saveSettings(patch) {
+    const result = await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify(patch),
+    });
+    if (result.defaultProjectDir !== undefined) {
+      state.defaultProjectDir = result.defaultProjectDir;
     }
+    if (result.identity !== undefined) {
+      state.identity = result.identity;
+    }
+    return result;
   }
 
-  /** Restores the remembered projects folder so the picker reopens there. */
+  /** Loads the stored settings that the picker and the settings dialog read. */
   async function loadSettings() {
     try {
       const settings = await api("/api/settings");
-      if (settings.defaultProjectDir) {
-        state.defaultProjectDir = settings.defaultProjectDir;
+      state.defaultProjectDir = settings.defaultProjectDir || null;
+      state.identity = settings.identity || "";
+      state.configPath = settings.configPath || "";
+      state.version = settings.version || "";
+      if (ui.identityInput && ui.identityInput.value !== state.identity) {
+        ui.identityInput.value = state.identity;
       }
     } catch {
       // Settings are a convenience; the app works without them.
+    }
+  }
+
+  // ---------- settings dialog ----------
+
+  function openSettings() {
+    ui.settingsDir.value = state.defaultProjectDir || "";
+    ui.settingsDirStatus.textContent = state.defaultProjectDir
+      ? "The picker opens here next time."
+      : "The picker opens in your home folder.";
+    ui.settingsIdentity.value = state.identity || "";
+    ui.aboutVersion.textContent = state.version || "—";
+    ui.aboutConfig.textContent = state.configPath || "—";
+    ui.aboutProjects.textContent = String(state.projects.length);
+    ui.settingsDialog.showModal();
+  }
+
+  async function saveSettingsDialog() {
+    const dir = ui.settingsDir.value.trim();
+    try {
+      // The folder is resolved before it is stored, and the server expands a
+      // leading ~: a path that does not exist would otherwise sit in the
+      // settings failing every search until someone noticed.
+      const defaultProjectDir = dir
+        ? (await api("/api/directories?path=" + encodeURIComponent(dir))).path
+        : null;
+      await saveSettings({ defaultProjectDir, identity: ui.settingsIdentity.value });
+      if (ui.identityInput) ui.identityInput.value = state.identity;
+      ui.settingsDialog.close();
+      setStatus("Settings saved", "ok");
+      if (state.questionnaire) await loadSaved();
+    } catch (error) {
+      ui.settingsDirStatus.textContent = error.message;
+    }
+  }
+
+  function showSettingsSection(name) {
+    for (const tab of ui.settingsDialog.querySelectorAll(".settings-tab")) {
+      const active = tab.dataset.section === name;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-current", String(active));
+    }
+    for (const pane of ui.settingsDialog.querySelectorAll("[data-pane]")) {
+      pane.hidden = pane.dataset.pane !== name;
     }
   }
 
@@ -1223,37 +1451,45 @@
   );
 
   ui.identityInput.addEventListener("change", async () => {
-    state.identity = ui.identityInput.value.trim();
     try {
-      await api("/api/identity", {
-        method: "POST",
-        body: JSON.stringify({ label: state.identity }),
-      });
+      await saveSettings({ identity: ui.identityInput.value });
     } catch {
       /* the label is also sent per request, so a failure here is not fatal */
     }
     if (state.questionnaire) await loadSaved();
   });
 
+  ui.settingsBtn.addEventListener("click", openSettings);
+  ui.settingsClose.addEventListener("click", () => ui.settingsDialog.close());
+  ui.settingsSave.addEventListener("click", saveSettingsDialog);
+  ui.settingsDirReset.addEventListener("click", () => {
+    ui.settingsDir.value = "";
+    ui.settingsDirStatus.textContent = "The picker opens in your home folder.";
+  });
+  for (const tab of ui.settingsDialog.querySelectorAll(".settings-tab")) {
+    tab.addEventListener("click", () => showSettingsSection(tab.dataset.section));
+  }
+
   ui.addProjectBtn.addEventListener("click", () => openPicker());
 
-  // One field: it is a folder to search, or a name to search for.
+  // One field, one list. Typing filters; the keyboard drives the same list the
+  // mouse does.
   ui.projectSearch.addEventListener("input", onSearchInput);
-  ui.projectSearch.addEventListener("change", runSearch);
-  ui.pickerBack.addEventListener("click", goUp);
+  ui.projectSearch.addEventListener("keydown", onSearchKeydown);
+  ui.pickerBack.addEventListener("click", goUpPicker);
   ui.defaultDirBrowse.addEventListener("click", async () => {
     ui.browseBlock.hidden = false;
     ui.browseBlock.open = true;
-    await browseInto(state.defaultProjectDir || "");
+    await browseInto(state.picker.root || state.defaultProjectDir || "");
   });
 
+  // The manual folder browser behind "Browse", kept for folders the search does
+  // not surface.
   ui.pickerUp.addEventListener("click", async () => {
     const path = ui.pickerPath.value;
     const parent = path.replace(/\/[^/]*$/, "") || "/";
     await browseInto(parent);
   });
-  // Typing or pasting a path should navigate, not just sit in the field: the
-  // path box is the fastest route for someone who already knows the folder.
   ui.pickerPath.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -1263,6 +1499,7 @@
   ui.pickerPath.addEventListener("change", () => {
     browseInto(ui.pickerPath.value.trim());
   });
+  ui.projectCancel.addEventListener("click", () => ui.projectDialog.close());
   ui.projectSave.addEventListener("click", (event) => {
     event.preventDefault();
     addSelectedProject();

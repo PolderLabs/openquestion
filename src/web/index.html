@@ -61,6 +61,13 @@
       <div class="rail-foot" id="railFoot">
         <span class="status-dot" id="statusDot"></span>
         <span id="statusText">Ready</span>
+        <button class="tiny-button" id="settingsBtn" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.4" fill="none" stroke="currentColor" stroke-width="1.3"/>
+            <path d="M8 1.4v1.8M8 12.8v1.8M14.6 8h-1.8M3.2 8H1.4M12.7 3.3l-1.3 1.3M4.6 11.4l-1.3 1.3M12.7 12.7l-1.3-1.3M4.6 4.6L3.3 3.3"
+                  fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+          </svg>
+        </button>
       </div>
     </aside>
 
@@ -164,7 +171,7 @@
                     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </button>
-          <span class="picker-root" id="pickerRoot">home</span>
+          <span class="picker-root" id="pickerRoot">~</span>
         </div>
         <div class="search-wrap">
           <svg class="search-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -173,9 +180,12 @@
           </svg>
           <input class="input search-input" id="projectSearch" type="text"
                  autocomplete="off" spellcheck="false"
-                 placeholder="Search projects by name">
+                 placeholder="Search, or paste a path">
         </div>
         <p class="field-note" id="defaultDirStatus">Searching your home folder.</p>
+        <p class="picker-hint">
+          <kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Tab</kbd> complete · <kbd>Enter</kbd> open or add
+        </p>
       </div>
 
       <div class="picker-list" id="searchResults" role="listbox"
@@ -190,8 +200,10 @@
 
       <div class="dialog-actions">
         <button class="button ghost" id="defaultDirBrowse" type="button">Browse</button>
-        <button class="button ghost" value="cancel">Cancel</button>
-        <button class="button primary" id="projectSave" value="save" disabled>Add project</button>
+        <button class="button ghost" id="projectCancel" type="button">Cancel</button>
+        <!-- type="button": inside a method="dialog" form the default would be
+             submit, which closes the dialog and discards instead of adding. -->
+        <button class="button primary" id="projectSave" type="button" disabled>Add project</button>
       </div>
 
       <!-- Escape hatch for folders the search does not surface. -->
@@ -203,6 +215,67 @@
         </div>
         <div class="picker-list" id="pickerList" role="listbox" aria-label="Folders"></div>
       </details>
+    </form>
+  </dialog>
+
+  <!-- Settings: a sidebar of sections, one pane each. Every field saves to
+       /api/settings and is read back on load, so nothing here is session-only
+       except what the pane says so. -->
+  <dialog class="dialog wide" id="settingsDialog">
+    <form method="dialog" class="dialog-card settings-card">
+      <h2>Settings</h2>
+
+      <div class="settings-body">
+        <nav class="settings-nav" aria-label="Settings sections">
+          <button class="settings-tab is-active" data-section="projects" type="button" aria-current="true">Projects</button>
+          <button class="settings-tab" data-section="answering" type="button">Answering</button>
+          <button class="settings-tab" data-section="about" type="button">About</button>
+        </nav>
+
+        <div class="settings-panes">
+          <section class="settings-pane" data-pane="projects">
+            <h3>Projects folder</h3>
+            <p class="field-note">
+              Where the add-project picker starts looking. Leave it empty to
+              search from your home folder. Nothing is ever added from here
+              without you picking it.
+            </p>
+            <div class="picker-path">
+              <input class="input" id="settingsDir" type="text" spellcheck="false"
+                     autocomplete="off" placeholder="Home folder">
+              <button class="button ghost" id="settingsDirReset" type="button">Home</button>
+            </div>
+            <p class="field-note" id="settingsDirStatus"></p>
+          </section>
+
+          <section class="settings-pane" data-pane="answering" hidden>
+            <h3>Answering as</h3>
+            <p class="field-note">
+              Names the answer file this browser writes. No account needed.
+            </p>
+            <input class="input" id="settingsIdentity" type="text" maxlength="64"
+                   placeholder="your name" autocomplete="off" spellcheck="false">
+          </section>
+
+          <section class="settings-pane" data-pane="about" hidden>
+            <h3>openquestion</h3>
+            <dl class="about-list">
+              <div><dt>Version</dt><dd id="aboutVersion">—</dd></div>
+              <div><dt>Config</dt><dd id="aboutConfig">—</dd></div>
+              <div><dt>Projects</dt><dd id="aboutProjects">—</dd></div>
+            </dl>
+            <p class="field-note">
+              Releases are git tags. <code>oq update --check</code> says whether a
+              newer one exists, and <code>oq update</code> installs it.
+            </p>
+          </section>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <button class="button ghost" id="settingsClose" type="button">Close</button>
+        <button class="button primary" id="settingsSave" type="button">Save</button>
+      </div>
     </form>
   </dialog>
 
