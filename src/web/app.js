@@ -1,0 +1,822 @@
+(() => {
+  "use strict";
+
+  // The app has one job: show one questionnaire and save the answers. Every
+  // piece of chrome either changes what is on screen or reports where the
+  // answers go.
+
+  const el = (id) => document.getElementById(id);
+  const ui = {};
+  for (const id of [
+    "rail", "railToggle", "railOpen", "projectList", "projectEmpty",
+    "addProjectBtn", "modeLocal", "modeGithub", "identityInput",
+    "statusDot", "statusText", "crumbProject", "crumbQuestionnaire",
+    "questionnaireSelect", "saveBtn", "content", "emptyState", "sheet",
+    "qVersion", "qTitle", "qDescription", "progress", "progressPercent",
+    "progressFill", "progressDetail", "toc", "questions",
+    "savebar", "saveState", "saveTarget", "reloadBtn", "saveBarBtn",
+    "projectDialog", "pickerPath", "pickerUp", "pickerList", "projectGit",
+    "projectSave", "toastDialog", "toastTitle", "toastBody",
+  ]) {
+    ui[id] = el(id);
+  }
+
+  const state = {
+    projects: [],
+    projectId: null,
+    mode: "local",
+    identity: "",
+    manifest: null,
+    questionnaire: null,
+    answers: {},
+    comments: {},
+    remoteSha: null,
+    dirty: false,
+  };
+
+  const SUPPORTED_TYPES = new Set([
+    "text", "textarea", "number", "single", "multi", "select", "boolean", "info",
+  ]);
+  const COMMENT_MAX_LENGTH = 2000;
+  const DRAFT_PREFIX = "openquestion:draft";
+
+  // ---------- helpers ----------
+
+  const trace = (...parts) => console.log("[openquestion]", ...parts);
+
+  function setStatus(text, kind = "") {
+    ui.statusText.textContent = text;
+    ui.statusDot.className = "status-dot" + (kind ? " " + kind : "");
+  }
+
+  async function api(path, options = {}) {
+    const response = await fetch(path, {
+      ...options,
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+      },
+      cache: "no-store",
+    });
+    const text = await response.text();
+    let payload = null;
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { message: text };
+      }
+    }
+    if (!response.ok) {
+      const error = new Error(payload?.message || `HTTP ${response.status}`);
+      error.status = response.status;
+      error.code = payload?.error || "request_failed";
+      throw error;
+    }
+    return payload;
+  }
+
+  function toast(title, message) {
+    ui.toastTitle.textContent = title;
+    ui.toastBody.textContent = String(message || "");
+    if (!ui.toastDialog.open) ui.toastDialog.showModal();
+  }
+
+  function currentProject() {
+    return state.projects.find((p) => p.id === state.projectId) || null;
+  }
+
+  function questionParams() {
+    const params = new URLSearchParams();
+    if (state.projectId) params.set("project", state.projectId);
+    if (state.identity) params.set("as", state.identity);
+    return params;
+  }
+
+  // ---------- projects ----------
+
+  async function loadProjects() {
+    const { projects } = await api("/api/projects");
+    state.projects = projects;
+
+    if (!state.projectId && projects.length > 0) {
+      // Prefer a project that already has a manifest, so the first run shows
+      // something useful instead of an error.
+      const usable = projects.find((p) => p.storage === "local") || projects[0];
+      state.projectId = usable.id;
+    }
+
+    renderProjects();
+    return projects;
+  }
+
+  function renderProjects() {
+    ui.projectList.replaceChildren();
+    ui.projectEmpty.hidden = state.projects.length > 0;
+
+    for (const project of state.projects) {
+      const button = document.createElement("button");
+      button.className = "project-item";
+      button.type = "button";
+      button.setAttribute("aria-current", String(project.id === state.projectId));
+
+      const dot = document.createElement("span");
+      dot.className = "project-dot";
+      const name = document.createElement("span");
+      name.className = "project-name";
+      name.textContent = project.name;
+      button.append(dot, name);
+
+      button.addEventListener("click", () => selectProject(project.id));
+      ui.projectList.append(button);
+    }
+  }
+
+  async function selectProject(id) {
+    if (state.dirty && !confirm("You have unsaved answers. Switch projects and lose them?")) {
+      return;
+    }
+    state.projectId = id;
+    state.questionnaire = null;
+    state.manifest = null;
+    renderProjects();
+    await loadManifest();
+  }
+
+  // ---------- manifest + questionnaire ----------
+
+  async function loadManifest() {
+    if (!state.projectId) {
+      ui.crumbProject.textContent = "No project";
+      return;
+    }
+    const project = currentProject();
+    ui.crumbProject.textContent = project ? project.name : "No project";
+    ui.crumbQuestionnaire.textContent = "Select a questionnaire";
+
+    setStatus("Loading…", "busy");
+    try {
+      const result = await api("/api/manifest?" + questionParams());
+      state.manifest = result;
+      renderManifest();
+      setStatus("Ready", "ok");
+    } catch (error) {
+      state.manifest = null;
+      renderManifest();
+      setStatus("No manifest", "error");
+      showEmpty(error.message);
+    }
+  }
+
+  function renderManifest() {
+    const select = ui.questionnaireSelect;
+    const previous = select.value;
+    select.replaceChildren();
+
+    const items = state.manifest?.manifest?.questionnaires || [];
+    select.disabled = items.length === 0;
+
+    if (items.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No questionnaires";
+      select.append(option);
+      ui.saveBtn.disabled = true;
+      return;
+    }
+
+    for (const item of items) {
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = item.title + (item.status === "active" ? " · active" : "");
+      select.append(option);
+    }
+
+    select.value = items.some((i) => i.id === previous) ? previous : items[0].id;
+  }
+
+  async function openQuestionnaire(id) {
+    const entry = (state.manifest?.manifest?.questionnaires || []).find(
+      (item) => item.id === id,
+    );
+    if (!entry) return;
+
+    setStatus("Loading…", "busy");
+    try {
+      const result = await api(
+        "/api/questionnaire?" + questionParams() + "&path=" + encodeURIComponent(entry.path),
+      );
+      validateQuestionnaire(result.document);
+      state.questionnaire = result.document;
+      ui.crumbQuestionnaire.textContent = entry.title;
+      loadLocal();
+      renderQuestionnaire();
+      await loadSaved();
+      setStatus("Ready", "ok");
+    } catch (error) {
+      setStatus("Failed", "error");
+      toast("Could not open questionnaire", error.message);
+    }
+  }
+
+  function validateQuestionnaire(document) {
+    if (
+      !document ||
+      document.schemaVersion !== 1 ||
+      !Array.isArray(document.sections)
+    ) {
+      throw new Error("Unsupported questionnaire document.");
+    }
+  }
+
+  // ---------- persistence ----------
+
+  function draftKey() {
+    if (!state.questionnaire || !state.projectId) return null;
+    return [DRAFT_PREFIX, state.projectId, state.questionnaire.id, state.questionnaire.version].join(":");
+  }
+
+  function loadLocal() {
+    const key = draftKey();
+    state.answers = {};
+    state.comments = {};
+    state.remoteSha = null;
+    state.dirty = false;
+    if (!key) return;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      state.answers = draft.answers || {};
+      state.comments = draft.comments || {};
+    } catch {
+      /* a corrupt draft must not block opening the questionnaire */
+    }
+  }
+
+  function saveLocal() {
+    const key = draftKey();
+    if (!key) return;
+    localStorage.setItem(
+      key,
+      JSON.stringify({ answers: state.answers, comments: state.comments }),
+    );
+  }
+
+  async function loadSaved() {
+    if (!state.questionnaire) return;
+    try {
+      const result = await api(
+        "/api/answers?" + questionParams() +
+          "&questionnaireId=" + encodeURIComponent(state.questionnaire.id),
+      );
+      if (result.exists) {
+        state.remoteSha = result.sha;
+        // A saved copy always wins over an unsaved draft: it is the one the
+        // user committed, and the draft is only a safety net.
+        if (Object.keys(state.answers).length === 0) {
+          state.answers = result.document.answers || {};
+          state.comments = result.document.comments || {};
+          renderQuestionnaire();
+          setSaveState("Saved");
+        } else {
+          setSaveState("Unsaved changes");
+        }
+      } else {
+        setSaveState(Object.keys(state.answers).length > 0 ? "Unsaved changes" : "Not saved");
+      }
+    } catch (error) {
+      setSaveState("Not saved");
+    }
+    updateProgress();
+  }
+
+  function setSaveState(text) {
+    ui.saveState.textContent = text;
+    ui.saveBtn.disabled = text !== "Unsaved changes";
+    ui.saveBarBtn.disabled = ui.saveBtn.disabled;
+  }
+
+  function markDirty() {
+    state.dirty = true;
+    saveLocal();
+    setSaveState("Unsaved changes");
+  }
+
+  async function save() {
+    if (!state.questionnaire) return;
+    const entry = (state.manifest?.manifest?.questionnaires || []).find(
+      (item) => item.id === state.questionnaire.id,
+    );
+    setStatus("Saving…", "busy");
+    try {
+      const result = await api("/api/answers?" + questionParams(), {
+        method: "PUT",
+        body: JSON.stringify({
+          questionnaireId: state.questionnaire.id,
+          questionnaireVersion: state.questionnaire.version,
+          sourcePath: entry.path,
+          answers: state.answers,
+          comments: state.comments,
+          respondent: state.identity || undefined,
+          expectedSha: state.remoteSha,
+          message: `docs: update ${state.questionnaire.id} answers`,
+        }),
+      });
+      state.remoteSha = result.sha;
+      state.dirty = false;
+      setStatus("Saved", "ok");
+      setSaveState("Saved");
+      ui.saveTarget.textContent = result.path || "";
+      localStorage.removeItem(draftKey());
+      if (result.committed && result.committed.ok) {
+        setStatus("Saved and committed", "ok");
+      }
+    } catch (error) {
+      setStatus("Save failed", "error");
+      if (error.code === "answer_conflict") {
+        toast(
+          "Answers changed on disk",
+          "Reload to pick up the saved copy, then reapply your changes.",
+        );
+        setSaveState("Conflict");
+      } else {
+        toast("Could not save", error.message);
+      }
+    }
+  }
+
+  // ---------- rendering ----------
+
+  function showEmpty(message) {
+    ui.sheet.hidden = true;
+    ui.emptyState.hidden = false;
+    ui.savebar.hidden = true;
+    ui.questions.replaceChildren();
+    ui.toc.replaceChildren();
+    ui.crumbQuestionnaire.textContent = "Select a questionnaire";
+    if (message) ui.emptyState.querySelector("p").textContent = message;
+  }
+
+  function renderQuestionnaire() {
+    const questionnaire = state.questionnaire;
+    if (!questionnaire) return showEmpty();
+
+    ui.emptyState.hidden = true;
+    ui.sheet.hidden = false;
+    ui.savebar.hidden = false;
+    ui.qVersion.textContent = questionnaire.id + " · v" + questionnaire.version;
+    ui.qTitle.textContent = questionnaire.title;
+    ui.qDescription.textContent = questionnaire.description || "";
+
+    ui.toc.replaceChildren();
+    ui.questions.replaceChildren();
+
+    for (const section of questionnaire.sections) {
+      const block = document.createElement("section");
+      block.className = "section";
+      block.id = "section-" + CSS.escape(section.id);
+
+      const title = document.createElement("h2");
+      title.className = "section-title";
+      title.textContent = section.title;
+      block.append(title);
+
+      if (section.description) {
+        const note = document.createElement("p");
+        note.className = "section-note";
+        note.textContent = section.description;
+        block.append(note);
+      }
+
+      for (const question of section.questions) {
+        block.append(renderQuestion(question));
+      }
+
+      const link = document.createElement("a");
+      link.href = "#" + block.id;
+      link.textContent = section.title;
+      ui.toc.append(link);
+
+      ui.questions.append(block);
+    }
+
+    updateProgress();
+  }
+
+  function renderQuestion(question) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "q";
+    wrapper.dataset.questionId = question.id;
+
+    if (question.type !== "info") {
+      const head = document.createElement("div");
+      head.className = "q-head";
+
+      const label = document.createElement("span");
+      label.className = "q-label";
+      label.textContent = question.label || "";
+      head.append(label);
+
+      if (!question.required) {
+        const optional = document.createElement("span");
+        optional.className = "q-optional";
+        optional.textContent = "optional";
+        head.append(optional);
+      }
+      wrapper.append(head);
+
+      if (question.help) {
+        const help = document.createElement("p");
+        help.className = "q-help";
+        help.textContent = question.help;
+        wrapper.append(help);
+      }
+    }
+
+    const body = document.createElement("div");
+    body.className = "q-body";
+    body.append(renderControl(question));
+    wrapper.append(body);
+
+    if (question.type !== "info") {
+      wrapper.append(renderNote(question));
+    }
+
+    return wrapper;
+  }
+
+  function renderControl(question) {
+    const current = state.answers[question.id];
+
+    if (question.type === "info") {
+      const p = document.createElement("p");
+      p.className = "info";
+      p.textContent = question.text || "";
+      return p;
+    }
+
+    if (question.type === "single" || question.type === "multi") {
+      const list = document.createElement("div");
+      list.className = "choices";
+      const type = question.type === "single" ? "radio" : "checkbox";
+      for (const item of question.options || []) {
+        list.append(renderChoice(question, item, type, current));
+      }
+      return list;
+    }
+
+    if (question.type === "select") {
+      const select = document.createElement("select");
+      select.dataset.answerFor = question.id;
+      select.append(new Option("Choose…", ""));
+      for (const item of question.options || []) {
+        const option = new Option(item.label, String(item.value));
+        option.selected = String(current ?? "") === String(item.value);
+        select.append(option);
+      }
+      return select;
+    }
+
+    if (question.type === "boolean") {
+      const select = document.createElement("select");
+      select.dataset.answerFor = question.id;
+      select.append(new Option("Choose…", ""));
+      const yes = new Option("Yes", "true");
+      const no = new Option("No", "false");
+      yes.selected = current === true;
+      no.selected = current === false;
+      select.append(yes, no);
+      return select;
+    }
+
+    if (question.type === "textarea") {
+      const textarea = document.createElement("textarea");
+      textarea.dataset.answerFor = question.id;
+      textarea.value = current ?? "";
+      if (question.placeholder) textarea.placeholder = question.placeholder;
+      if (question.maxLength) textarea.maxLength = question.maxLength;
+      return textarea;
+    }
+
+    const input = document.createElement("input");
+    input.dataset.answerFor = question.id;
+    input.type = question.type === "number" ? "number" : "text";
+    input.value = current ?? "";
+    if (question.placeholder) input.placeholder = question.placeholder;
+    if (question.type === "number") {
+      if (question.min !== undefined) input.min = question.min;
+      if (question.max !== undefined) input.max = question.max;
+      if (question.step !== undefined) input.step = question.step;
+    }
+    return input;
+  }
+
+  function renderChoice(question, item, type, current) {
+    const label = document.createElement("label");
+    label.className = "choice";
+
+    const input = document.createElement("input");
+    input.type = type;
+    input.dataset.answerFor = question.id;
+    input.value = String(item.value);
+    input.checked =
+      type === "radio"
+        ? String(current ?? "") === String(item.value)
+        : Array.isArray(current) && current.map(String).includes(String(item.value));
+
+    const text = document.createElement("span");
+    text.textContent = item.label;
+
+    label.append(input, text);
+    return label;
+  }
+
+  function renderNote(question) {
+    const wrap = document.createElement("div");
+    wrap.className = "note";
+
+    const details = document.createElement("details");
+    const existing = state.comments[question.id];
+    if (existing) details.open = true;
+
+    const summary = document.createElement("summary");
+    summary.className = "note-toggle";
+    summary.textContent = existing ? "Note" : "Add a note";
+
+    const textarea = document.createElement("textarea");
+    textarea.className = "note-input";
+    textarea.dataset.noteFor = question.id;
+    textarea.rows = 2;
+    textarea.maxLength = COMMENT_MAX_LENGTH;
+    textarea.placeholder = "Explain or qualify this answer";
+    textarea.value = existing ?? "";
+
+    const hint = document.createElement("span");
+    hint.className = "note-hint";
+    hint.textContent = "Saved with this answer. Never required.";
+
+    details.append(summary, textarea, hint);
+    wrap.append(details);
+    return wrap;
+  }
+
+  // ---------- events ----------
+
+  function collect(target) {
+    if (target.dataset?.noteFor) {
+      const id = target.dataset.noteFor;
+      const value = target.value.trim();
+      if (value) {
+        state.comments[id] = value;
+      } else {
+        delete state.comments[id];
+        const details = target.closest("details");
+        if (details) details.open = false;
+      }
+      const summary = target.closest("details")?.querySelector(".note-toggle");
+      if (summary) summary.textContent = value ? "Note" : "Add a note";
+      markDirty();
+      return;
+    }
+
+    const id = target.dataset?.answerFor;
+    if (!id) return;
+    const question = allQuestions().find((q) => q.id === id);
+    if (!question) return;
+
+    if (question.type === "multi") {
+      const values = [...document.querySelectorAll(
+        `input[data-answer-for="${CSS.escape(id)}"]:checked`,
+      )].map((input) => input.value);
+      state.answers[id] = values;
+    } else if (question.type === "single") {
+      const checked = document.querySelector(
+        `input[data-answer-for="${CSS.escape(id)}"]:checked`,
+      );
+      if (checked) state.answers[id] = checked.value;
+    } else if (question.type === "boolean") {
+      if (target.value === "") delete state.answers[id];
+      else state.answers[id] = target.value === "true";
+    } else if (question.type === "number") {
+      if (target.value === "") delete state.answers[id];
+      else state.answers[id] = Number(target.value);
+    } else if (target.value === "") {
+      delete state.answers[id];
+    } else {
+      state.answers[id] = target.value;
+    }
+
+    markDirty();
+    updateProgress();
+  }
+
+  function allQuestions() {
+    return state.questionnaire
+      ? state.questionnaire.sections.flatMap((s) => s.questions)
+      : [];
+  }
+
+  function hasAnswer(question) {
+    const value = state.answers[question.id];
+    if (question.type === "multi") return Array.isArray(value) && value.length > 0;
+    if (question.type === "boolean") return typeof value === "boolean";
+    if (question.type === "number") return typeof value === "number" && Number.isFinite(value);
+    return value !== undefined && value !== null && String(value).trim() !== "";
+  }
+
+  function updateProgress() {
+    if (!state.questionnaire) return;
+    const required = allQuestions().filter((q) => q.required && q.type !== "info");
+    const done = required.filter(hasAnswer);
+    const percent = required.length === 0
+      ? 100
+      : Math.round((done.length / required.length) * 100);
+
+    ui.progressPercent.textContent = percent + "%";
+    ui.progressFill.style.width = percent + "%";
+    ui.progressDetail.textContent = done.length + " of " + required.length + " required";
+
+    for (const question of required) {
+      const node = ui.questions.querySelector(
+        `.q[data-question-id="${CSS.escape(question.id)}"] .q-label`,
+      );
+      if (node) node.style.color = hasAnswer(question) ? "var(--text)" : "var(--text)";
+    }
+  }
+
+  // ---------- project picker ----------
+
+  async function openPicker() {
+    ui.projectDialog.showModal();
+    await browseInto(state.pickerStart || "");
+  }
+
+  async function browseInto(path) {
+    setStatus("Browsing…", "busy");
+    try {
+      const listing = await api("/api/directories" + (path ? "?path=" + encodeURIComponent(path) : ""));
+      ui.pickerPath.value = listing.path;
+      ui.pickerUp.disabled = !listing.parent;
+      ui.pickerList.replaceChildren();
+
+      if (listing.directories.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "picker-empty";
+        empty.textContent = "No sub-folders here.";
+        ui.pickerList.append(empty);
+        return;
+      }
+
+      for (const dir of listing.directories) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "picker-item" + (dir.isProject ? " is-project" : "");
+        const dot = document.createElement("span");
+        dot.className = "dot";
+        const name = document.createElement("span");
+        name.textContent = dir.name;
+        button.append(dot, name);
+        button.addEventListener("click", () => browseInto(dir.path));
+        ui.pickerList.append(button);
+      }
+    } catch (error) {
+      toast("Could not open folder", error.message);
+    } finally {
+      setStatus("Ready", "ok");
+    }
+  }
+
+  async function addSelectedProject() {
+    const path = ui.pickerPath.value.trim();
+    if (!path) return;
+    setStatus("Adding…", "busy");
+    try {
+      const { project } = await api("/api/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          path,
+          commitOnWrite: ui.projectGit.checked,
+        }),
+      });
+      ui.projectDialog.close();
+      await loadProjects();
+      await selectProject(project.id);
+      setStatus("Added " + project.name, "ok");
+    } catch (error) {
+      toast("Could not add project", error.message);
+    }
+  }
+
+  // ---------- wiring ----------
+
+  function setMode(mode) {
+    state.mode = mode;
+    ui.modeLocal.setAttribute("aria-checked", String(mode === "local"));
+    ui.modeGithub.setAttribute("aria-checked", String(mode === "github"));
+  }
+
+  ui.modeLocal.addEventListener("click", () => setMode("local"));
+  ui.modeGithub.addEventListener("click", () =>
+    setMode("github") ||
+    toast("GitHub storage", "Add a project with GitHub configured in projects.json to use repo-backed storage."),
+  );
+
+  ui.identityInput.addEventListener("change", async () => {
+    state.identity = ui.identityInput.value.trim();
+    try {
+      await api("/api/identity", {
+        method: "POST",
+        body: JSON.stringify({ label: state.identity }),
+      });
+    } catch {
+      /* the label is also sent per request, so a failure here is not fatal */
+    }
+    if (state.questionnaire) await loadSaved();
+  });
+
+  ui.addProjectBtn.addEventListener("click", () => openPicker());
+  ui.pickerUp.addEventListener("click", async () => {
+    const path = ui.pickerPath.value;
+    const parent = path.replace(/\/[^/]*$/, "") || "/";
+    await browseInto(parent);
+  });
+  // Typing or pasting a path should navigate, not just sit in the field: the
+  // path box is the fastest route for someone who already knows the folder.
+  ui.pickerPath.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      browseInto(ui.pickerPath.value.trim());
+    }
+  });
+  ui.pickerPath.addEventListener("change", () => {
+    browseInto(ui.pickerPath.value.trim());
+  });
+  ui.projectSave.addEventListener("click", (event) => {
+    event.preventDefault();
+    addSelectedProject();
+  });
+  ui.projectDialog.addEventListener("close", () => setStatus("Ready", "ok"));
+
+  ui.questionnaireSelect.addEventListener("change", () => {
+    openQuestionnaire(ui.questionnaireSelect.value);
+  });
+
+  ui.saveBtn.addEventListener("click", save);
+  ui.saveBarBtn.addEventListener("click", save);
+  ui.reloadBtn.addEventListener("click", async () => {
+    if (state.dirty && !confirm("Discard your unsaved answers?")) return;
+    loadLocal();
+    renderQuestionnaire();
+    await loadSaved();
+  });
+
+  ui.railToggle.addEventListener("click", () => {
+    const app = document.querySelector(".app");
+    app.classList.remove("rail-open");
+    app.classList.add("rail-collapsed");
+    ui.railOpen.hidden = false;
+  });
+  ui.railOpen.addEventListener("click", () => {
+    const app = document.querySelector(".app");
+    app.classList.remove("rail-collapsed");
+    app.classList.add("rail-open");
+    ui.railOpen.hidden = true;
+  });
+
+  ui.questions.addEventListener("input", (event) => collect(event.target));
+  ui.questions.addEventListener("change", (event) => collect(event.target));
+
+  window.addEventListener("beforeunload", (event) => {
+    if (!state.dirty) return;
+    event.preventDefault();
+  });
+
+  // ---------- start ----------
+
+  async function start() {
+    setStatus("Starting…", "busy");
+    try {
+      await loadProjects();
+      if (state.projectId) {
+        await loadManifest();
+        const first = ui.questionnaireSelect.value;
+        if (first) await openQuestionnaire(first);
+      } else {
+        showEmpty(
+          state.projects.length === 0
+            ? "Add a project from the sidebar to get started."
+            : "Pick a project from the sidebar.",
+        );
+        setStatus("No projects", "error");
+      }
+    } catch (error) {
+      setStatus("Failed", "error");
+      showEmpty(error.message);
+    }
+  }
+
+  trace("starting");
+  start();
+})();

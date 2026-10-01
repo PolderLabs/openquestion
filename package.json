@@ -1,0 +1,29 @@
+{
+  "name": "openquestion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Schema-driven questionnaires and decision intake with local and GitHub storage backends",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "openquestion": "src/cli/main.js"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./core": "./src/core/server.js",
+    "./storage/local": "./src/storage/local.js",
+    "./storage/git": "./src/storage/git.js"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "start": "node src/cli/main.js serve",
+    "dev": "node src/cli/main.js serve",
+    "check": "node --check src/cli/main.js && node --check src/core/server.js && node --check src/core/validate.js && node --check src/core/storage.js && node --check src/storage/local.js && node --check src/storage/git.js && node --check src/projects/registry.js && node --check src/web/app.js"
+  },
+  "license": "AGPL-3.0"
+}

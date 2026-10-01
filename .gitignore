@@ -1,0 +1,19 @@
+node_modules/
+dist/
+build/
+coverage/
+
+# Local config and any session material. Never commit these.
+.env
+.env.*
+!.env.example
+projects.json
+.session-store.json
+.session-store.json.*.tmp
+
+*.log
+.DS_Store
+.idea/
+.vscode/
+tmp/
+.cache/

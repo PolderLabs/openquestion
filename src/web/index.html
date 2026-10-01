@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>openquestion</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Left rail: projects and modes, the only persistent navigation. -->
+    <aside class="rail" id="rail">
+      <div class="rail-head">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">oq</span>
+          <span class="brand-name">openquestion</span>
+        </div>
+        <button class="icon-button" id="railToggle" aria-label="Hide sidebar" title="Hide sidebar">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+            <rect x="1" y="2.5" width="14" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+            <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.3"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="rail-scroll">
+        <section class="rail-section">
+          <div class="rail-label">
+            <span>Projects</span>
+            <button class="tiny-button" id="addProjectBtn" title="Add a project" aria-label="Add a project">+</button>
+          </div>
+          <nav class="project-list" id="projectList" aria-label="Projects"></nav>
+          <p class="rail-empty" id="projectEmpty" hidden>
+            No projects yet. Add a folder that contains a questionnaire.
+          </p>
+        </section>
+
+        <section class="rail-section">
+          <div class="rail-label"><span>Storage</span></div>
+          <div class="mode-switch" role="radiogroup" aria-label="Storage mode">
+            <button class="mode-option" id="modeLocal" role="radio" aria-checked="true">
+              <span class="mode-title">Local</span>
+              <span class="mode-hint">Files on disk</span>
+            </button>
+            <button class="mode-option" id="modeGithub" role="radio" aria-checked="false">
+              <span class="mode-title">GitHub</span>
+              <span class="mode-hint">Repo commits</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="rail-section" id="identitySection">
+          <div class="rail-label"><span>Answering as</span></div>
+          <input class="rail-input" id="identityInput" type="text" maxlength="64"
+                 placeholder="your name" autocomplete="off" spellcheck="false">
+          <p class="rail-note">Names the answer file. No account needed.</p>
+        </section>
+      </div>
+
+      <div class="rail-foot" id="railFoot">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Ready</span>
+      </div>
+    </aside>
+
+    <!-- Main column: one project, one questionnaire, nothing competing. -->
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-button rail-open" id="railOpen" aria-label="Show sidebar" title="Show sidebar" hidden>
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+            <rect x="1" y="2.5" width="14" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+            <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.3"/>
+          </svg>
+        </button>
+        <div class="crumb">
+          <span id="crumbProject">No project</span>
+          <span class="crumb-sep" aria-hidden="true">/</span>
+          <span id="crumbQuestionnaire" class="crumb-current">Select a questionnaire</span>
+        </div>
+        <div class="topbar-actions">
+          <select class="select" id="questionnaireSelect" aria-label="Choose questionnaire" disabled>
+            <option value="">No questionnaires</option>
+          </select>
+          <button class="button primary" id="saveBtn" disabled>Save</button>
+        </div>
+      </header>
+
+      <div class="content" id="content">
+        <section class="empty" id="emptyState">
+          <h1>No questionnaire open</h1>
+          <p>Pick a project and a questionnaire from the sidebar to start answering.</p>
+        </section>
+
+        <section class="sheet" id="sheet" hidden>
+          <div class="sheet-head">
+            <div class="sheet-title">
+              <p class="eyebrow" id="qVersion"></p>
+              <h1 id="qTitle"></h1>
+              <p class="lede" id="qDescription"></p>
+            </div>
+            <div class="progress" id="progress">
+              <div class="progress-head">
+                <span>Complete</span>
+                <strong id="progressPercent">0%</strong>
+              </div>
+              <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+              <span class="progress-detail" id="progressDetail">0 of 0</span>
+            </div>
+          </div>
+
+          <nav class="toc" id="toc" aria-label="Sections"></nav>
+
+          <div class="questions" id="questions"></div>
+        </section>
+      </div>
+
+      <!-- Sticky save bar: always answers "where are my answers". -->
+      <footer class="savebar" id="savebar" hidden>
+        <div class="savebar-text">
+          <strong id="saveState">Not saved</strong>
+          <span id="saveTarget"></span>
+        </div>
+        <div class="savebar-actions">
+          <button class="button ghost" id="reloadBtn">Discard changes</button>
+          <button class="button primary" id="saveBarBtn">Save answers</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Add-project dialog with a filesystem browser. -->
+  <dialog class="dialog" id="projectDialog">
+    <form method="dialog" class="dialog-card">
+      <h2>Add a project</h2>
+      <p class="dialog-note">
+        Choose a folder containing <code>questionnaire/manifest.json</code> or a
+        <code>questionnaire/questions/</code> directory.
+      </p>
+
+      <div class="picker">
+        <div class="picker-path">
+          <input class="input" id="pickerPath" type="text" spellcheck="false" autocomplete="off">
+          <button class="button ghost" id="pickerUp" type="button" title="Parent folder">Up</button>
+        </div>
+        <div class="picker-list" id="pickerList" role="listbox" aria-label="Folders"></div>
+      </div>
+
+      <div class="dialog-row">
+        <label class="check">
+          <input type="checkbox" id="projectGit">
+          <span>Commit answers to git when saving</span>
+        </label>
+      </div>
+
+      <div class="dialog-actions">
+        <button class="button ghost" value="cancel">Cancel</button>
+        <button class="button primary" id="projectSave" value="save">Add project</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="toastDialog">
+    <form method="dialog" class="dialog-card">
+      <h2 id="toastTitle">Done</h2>
+      <pre id="toastBody"></pre>
+      <div class="dialog-actions">
+        <button class="button primary" value="ok">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
