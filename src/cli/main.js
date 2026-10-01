@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 
 import { createApp } from "../core/server.js";
 import { createLocalStorage } from "../storage/local.js";
+import { createGitHubStorage } from "../storage/github.js";
 import { isGitRepo } from "../storage/git.js";
 import {
   listProjects,
@@ -50,6 +51,7 @@ Usage
   openquestion serve [--port 4321] [--host 127.0.0.1] [--open]
   openquestion projects list
   openquestion projects add <path> [--name <name>] [--git] [--scan <parent>]
+  openquestion projects add <path> --github <owner/name> [--branch main]
   openquestion projects remove <id>
   openquestion projects discover <parent>
   openquestion browse [<path>]
@@ -82,7 +84,18 @@ async function cmdServe(args) {
   const app = createApp({
     storageFactory: {
       local: (project) => createLocalStorage({ commitOnWrite: project.commitOnWrite }),
+      github: (project, session) =>
+        createGitHubStorage({
+          session,
+          repository: project.github?.repository,
+          branch: project.github?.branch,
+          manifestPath: project.github?.manifestPath,
+          token: process.env.GITHUB_TOKEN,
+          clientId: process.env.GITHUB_CLIENT_ID,
+          clientSecret: process.env.GITHUB_CLIENT_SECRET,
+        }),
     },
+    github: githubOAuthConfig(),
   });
 
   const server = createServer(app);
@@ -101,8 +114,30 @@ async function cmdServe(args) {
         } else {
           console.log(`  projects: ${projects.map((p) => p.name).join(", ")}`);
         }
+        const mode = [];
+        if (process.env.GITHUB_TOKEN) mode.push("github: GITHUB_TOKEN");
+        if (githubOAuthConfig()) mode.push("github: OAuth app");
+        if (mode.length) console.log(`  ${mode.join(" | ")}`);
+        else console.log("  github: not configured (local mode only)");
       });
   });
+}
+
+/**
+ * GitHub OAuth is optional. A project on GitHub storage works with a token alone,
+ * so the tool stays usable for agents and CI with no app registered.
+ */
+function githubOAuthConfig() {
+  const clientId = process.env.GITHUB_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+  const base = process.env.OPENQUESTION_PUBLIC_URL || `http://localhost:${process.env.OPENQUESTION_PORT || 4321}`;
+  if (!clientId || !clientSecret) return null;
+  return {
+    clientId,
+    clientSecret,
+    authorizeUrl: `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&scope=repo`,
+    callbackUrl: `${base.replace(/\/+$/, "")}/api/github/callback`,
+  };
 }
 
 async function cmdProjects(args) {
@@ -136,6 +171,19 @@ async function cmdProjects(args) {
       root,
       name: typeof flag(args, "--name") === "string" ? flag(args, "--name") : undefined,
       commitOnWrite: args.includes("--git"),
+      // --github owner/name switches the project to repository-backed storage.
+      // A local root is still recorded so the same folder can be used offline.
+      storage: flag(args, "--github") ? "github" : undefined,
+      github: flag(args, "--github")
+        ? {
+            repository: flag(args, "--github"),
+            branch: typeof flag(args, "--branch") === "string" ? flag(args, "--branch") : "main",
+            manifestPath:
+              typeof flag(args, "--manifest") === "string"
+                ? flag(args, "--manifest")
+                : undefined,
+          }
+        : undefined,
     });
 
     // --scan registers a parent for automatic sibling discovery.
