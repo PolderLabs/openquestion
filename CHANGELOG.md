@@ -11,8 +11,6 @@ The version follows semantic versioning:
 
 ## v0.3.0
 
-Not yet released.
-
 ### Added
 
 - The project picker searches from a folder you can travel through. It starts in
