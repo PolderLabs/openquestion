@@ -1,6 +1,6 @@
 {
   "name": "openquestion",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "Schema-driven questionnaires and decision intake with local and GitHub storage backends",
   "type": "module",
