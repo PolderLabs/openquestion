@@ -148,10 +148,24 @@
 
   /** Decide which of dash / empty / sheet is on screen. */
   function renderMain() {
-    ui.dash.hidden = Boolean(state.projectId) || state.projects.length === 0;
-    ui.emptyState.hidden = Boolean(state.projectId) || state.projects.length > 0;
+    const hasProject = Boolean(state.projectId);
+    ui.dash.hidden = hasProject || state.projects.length === 0;
+    ui.emptyState.hidden = hasProject || state.projects.length > 0;
     ui.sheet.hidden = !state.questionnaire;
     ui.savebar.hidden = !state.questionnaire;
+
+    // The questionnaire picker and Save only mean something once a project is
+    // open. Leaving a disabled "No questionnaires" dropdown and a dead Save
+    // button on the dashboard reads as broken, so they are hidden instead.
+    ui.questionnaireSelect.hidden = !hasProject;
+    ui.saveBtn.hidden = !hasProject;
+
+    // On the dashboard there is no project, so the breadcrumb would otherwise
+    // read "No project / Select a questionnaire".
+    if (!hasProject) {
+      ui.crumbProject.textContent = "Projects";
+      ui.crumbQuestionnaire.textContent = "";
+    }
   }
 
   async function loadProjects() {
@@ -198,6 +212,13 @@
     renderDashboard();
     renderMain();
     await loadManifest();
+
+    // Open the first questionnaire so choosing a project lands on something
+    // useful instead of an empty pane. The user still chose the project; this
+    // only picks between that project's own questionnaires.
+    if (ui.questionnaireSelect.value) {
+      await openQuestionnaire(ui.questionnaireSelect.value);
+    }
   }
 
   // ---------- manifest + questionnaire ----------

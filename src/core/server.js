@@ -239,7 +239,9 @@ async function handleApi(req, res, url, session) {
   const path = url.pathname;
 
   if (req.method === "GET" && path === "/api/health") {
-    sendJson(res, 200, { ok: true });
+    // `service` lets the CLI recognize its own instance, so a second `oq`
+    // reuses it instead of starting a duplicate on the same port.
+    sendJson(res, 200, { ok: true, service: "openquestion" });
     return;
   }
 

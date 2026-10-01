@@ -62,11 +62,31 @@ that the new tree still parses, and prints a rollback command if it does not.
 ## Start
 
 ```bash
-oq serve
-# oq serve --port 4321 --project ~/code/my-project
+oq
 ```
 
-Then open <http://127.0.0.1:4321>.
+That is the whole command. It serves on port **4731** — an unusual port, chosen
+so it does not collide with the usual dev servers — and opens
+<http://127.0.0.1:4731>. It does not matter which directory you run it from: the
+dashboard lists every configured project, and you pick one there.
+
+If oq is **already running**, running `oq` again prints the existing URL and opens
+it in your browser instead of starting a duplicate. If the port belongs to some
+other program, oq walks forward to the next free one and says so. To run a second
+copy deliberately:
+
+```bash
+oq --new
+```
+
+Useful flags:
+
+```bash
+oq --port 4780     # a specific port (reuses it if oq is already there)
+oq --host 0.0.0.0  # bind wider than loopback
+oq --open          # force opening the browser even when not a terminal
+oq serve --project ~/code/my-project --git
+```
 
 `--project` registers a directory and serves it immediately, which is the shortest
 path for a one-off run or an agent.
@@ -125,8 +145,8 @@ This is the mode to use from a local agent:
 ```bash
 oq serve --project /path/to/repo
 # or drive the HTTP API directly
-curl -s localhost:4321/api/manifest
-curl -s -X PUT localhost:4321/api/answers -H 'content-type: application/json' -d '{
+curl -s localhost:4731/api/manifest
+curl -s -X PUT localhost:4731/api/answers -H 'content-type: application/json' -d '{
   "questionnaireId": "game-design-v1",
   "questionnaireVersion": "1.0.0",
   "sourcePath": "questionnaire/questionnaires/game-design-v1.json",

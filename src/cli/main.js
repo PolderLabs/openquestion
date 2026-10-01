@@ -6,8 +6,9 @@
 // from the command line, and every command emits JSON with `--json`.
 
 import { createServer } from "node:http";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { connect } from "node:net";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
@@ -65,7 +66,9 @@ const help = `
 oq ${VERSION} - schema-driven questionnaires
 
 Usage
-  oq serve [--port 4321] [--host 127.0.0.1] [--project <path>] [--git]
+  oq [serve] [--port 4731] [--host 127.0.0.1] [--project <path>] [--git]
+  oq serve --new            force a second instance
+  oq serve --open           always open the browser
   oq projects list
   oq projects add <path> [--name <name>] [--git] [--scan <parent>]
   oq projects add <path> --github <owner/name> [--branch main]
@@ -74,6 +77,10 @@ Usage
   oq browse [<path>]
   oq config
   oq update [--check]
+
+Bare oq starts the server on port 4731. If oq is already running it
+opens that one in your browser instead of starting a second copy. If the
+port belongs to something else, the next free port is used.
 
 Every command accepts --json for machine-readable output.
 
@@ -237,8 +244,93 @@ async function run(bin, argv, cwd, allowFailure = false) {
   }
 }
 
+// 4731 is unusual enough not to collide with the usual dev-server ports
+// (3000, 4200, 4321, 5173, 8000, 8080) that another tool is likely to hold.
+const DEFAULT_PORT = 4731;
+// Walk forward from the preferred port rather than failing, so a second tool on
+// the machine does not block the app entirely.
+const PORT_PROBE_RANGE = 20;
+
+/**
+ * Asks a port whether something answers, and whether that something is us.
+ * The identity header is what distinguishes "oq is already running" from "some
+ * other program grabbed the port".
+ */
+async function probePort(port, host) {
+  return new Promise((resolve) => {
+    const socket = connect(
+      { port, host, timeout: 400 },
+      () => {
+        socket.destroy();
+        resolve("open");
+      },
+    );
+    socket.on("timeout", () => {
+      socket.destroy();
+      resolve("closed");
+    });
+    socket.on("error", () => {
+      socket.destroy();
+      resolve("closed");
+    });
+  });
+}
+
+async function identifyOq(port, host) {
+  try {
+    const response = await fetch(`http://${host}:${port}/api/health`, {
+      signal: AbortSignal.timeout(500),
+    });
+    if (!response.ok) return false;
+    const body = await response.json();
+    return body?.ok === true && body?.service === "openquestion";
+  } catch {
+    return false;
+  }
+}
+
+/** Scans forward from `preferred` for a free port, or returns null. */
+async function findFreePort(preferred, host, range) {
+  for (let port = preferred; port < preferred + range; port += 1) {
+    if ((await probePort(port, host)) === "closed") return port;
+  }
+  return null;
+}
+
+/** Returns the port of a running oq instance, or null. */
+async function findRunningInstance(preferred, host) {
+  for (let port = preferred; port < preferred + PORT_PROBE_RANGE; port += 1) {
+    if ((await probePort(port, host)) === "open" && (await identifyOq(port, host))) {
+      return { port };
+    }
+  }
+  return null;
+}
+
+/**
+ * Opens a URL in the user's browser. Best effort: this runs on a headless
+ * machine or over ssh just as often as on a desktop, and a failure to launch
+ * must never stop the server from running.
+ */
+function openBrowser(url) {
+  const opener =
+    process.platform === "darwin" ? "open"
+    : process.platform === "win32" ? "start"
+    : "xdg-open";
+  try {
+    const child = spawn(opener, [url], {
+      stdio: "ignore",
+      detached: true,
+    });
+    child.on("error", () => {});
+    child.unref();
+  } catch {
+    /* no browser available; the URL is printed either way */
+  }
+}
+
 async function cmdServe(args) {
-  const port = Number(flag(args, "--port", process.env.OPENQUESTION_PORT || 4321));
+  const preferred = Number(flag(args, "--port", process.env.OPENQUESTION_PORT || DEFAULT_PORT));
   const host = String(flag(args, "--host", process.env.OPENQUESTION_HOST || "127.0.0.1"));
   const projectPath = flag(args, "--project", null);
 
@@ -248,6 +340,35 @@ async function cmdServe(args) {
     const root = projectPath.replace(/^~(?=$|\/)/, process.env.HOME);
     if (!existsSync(root)) fail(`No such directory: ${root}`);
     await addProject({ root, commitOnWrite: args.includes("--git") });
+  }
+
+  // A second `oq` should not fight the first. If our own server already answers
+  // on a port, open the browser at it and exit instead of starting a duplicate.
+  // This applies whether or not --port was given: asking for the port that is
+  // already serving is the clearest possible request to reuse it.
+  if (!args.includes("--new")) {
+    const explicit = args.includes("--port");
+    const existing = await findRunningInstance(preferred, host);
+    if (existing && (!explicit || existing.port === preferred)) {
+      const url = `http://${host}:${existing.port}/`;
+      console.log(`oq is already running on ${url}`);
+      openBrowser(url);
+      return;
+    }
+  }
+
+  const port = await findFreePort(preferred, host, PORT_PROBE_RANGE);
+  if (port === null) {
+    return fail(
+      `No free port in ${preferred}-${preferred + PORT_PROBE_RANGE} on ${host}.\n` +
+        `Free one up, or pass --port <n>.`,
+    );
+  }
+  if (port !== preferred) {
+    const reason = (await probePort(preferred, host)) === "open"
+      ? "already in use"
+      : "in use by something else";
+    console.log(`Port ${preferred} is ${reason}; using ${port}.`);
   }
 
   const app = createApp({
@@ -268,26 +389,48 @@ async function cmdServe(args) {
   });
 
   const server = createServer(app);
+
+  // A failed bind is handled below, so a race with another process landing on
+  // the port between the probe and the listen does not crash with a stack trace.
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      return fail(
+        `Port ${port} was taken between the check and the bind.\n` +
+          `Re-run \`oq\` and it will pick another port.`,
+      );
+    }
+    fail(`Could not start the server: ${error.message}`);
+    process.exit(1);
+  });
+
   server.listen(port, host, () => {
-    const projects = [];
+    const url = `http://${host}:${port}/`;
     listProjects()
       .then((list) => {
-        projects.push(...list);
-      })
-      .finally(() => {
         console.log(`oq ${VERSION}`);
-        console.log(`  http://${host}:${port}`);
-        if (projects.length === 0) {
+        console.log(`  ${url}`);
+        if (list.length === 0) {
           console.log("  no projects yet - add one:");
           console.log(`    oq projects add ~/code/my-project`);
         } else {
-          console.log(`  projects: ${projects.map((p) => p.name).join(", ")}`);
+          console.log(`  projects: ${list.map((p) => p.name).join(", ")}`);
         }
         const mode = [];
         if (process.env.GITHUB_TOKEN) mode.push("github: GITHUB_TOKEN");
         if (githubOAuthConfig()) mode.push("github: OAuth app");
         if (mode.length) console.log(`  ${mode.join(" | ")}`);
         else console.log("  github: not configured (local mode only)");
+
+        if (args.includes("--open") || process.stdout.isTTY) {
+          openBrowser(url);
+        }
+      })
+      .catch((error) => {
+        // The server is already up; a failure to list projects is not fatal.
+        console.log(`oq ${VERSION}`);
+        console.log(`  ${url}`);
+        console.log(`  (could not read projects: ${error.message})`);
+        if (args.includes("--open") || process.stdout.isTTY) openBrowser(url);
       });
   });
 }
@@ -418,11 +561,27 @@ async function cmdConfig(args) {
 async function main() {
   const argv = process.argv.slice(2);
 
+  // Informational flags belong to oq itself, not to `serve`.
+  if (argv.includes("--version") || argv.includes("-v")) {
+    return console.log(VERSION);
+  }
+  if (argv.includes("--help") || argv.includes("-h")) {
+    return console.log(help);
+  }
+
   // Bare `oq` starts the server. The dashboard lists every configured project,
   // so the command needs no project argument and does not care which directory
-  // it was run from.
-  if (argv.length === 0) {
-    return cmdServe([]);
+  // it was run from. `oq --port 1234` is `oq serve --port 1234`.
+  const KNOWN = new Set([
+    "serve", "projects", "browse", "config", "update", "help",
+  ]);
+  // A leading flag means serve. A bare word that is not a command is a typo,
+  // and silently starting a server would hide it.
+  if (argv.length === 0 || argv[0].startsWith("-")) {
+    return cmdServe(argv);
+  }
+  if (!KNOWN.has(argv[0])) {
+    return fail(`Unknown command: ${argv[0]}\n\n${help}`);
   }
 
   const [command, ...args] = argv;
