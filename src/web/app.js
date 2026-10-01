@@ -982,18 +982,32 @@
   function onSearchInput() {
     clearTimeout(pickerTimer);
     const typed = ui.projectSearch.value.trim();
-    const cached = suggestCache.get((state.picker.root || "") + "\n" + typed);
+    const cached = cachedSuggest((state.picker.root || "") + "\n" + typed);
     if (cached) applyPickerResult(cached, typed, null);
     pickerTimer = setTimeout(refreshPicker, 45);
   }
 
   // One request in flight at a time, plus recent answers kept per root and
-  // query. Together they make typing feel local: a keystroke that repeats a
-  // query answers instantly, and one that does not cancels the request it
+  // query. Together they make typing feel local: a query that has been typed
+  // before answers instantly, and one that does not cancels the request it
   // replaces rather than racing it onto the screen.
   let pickerRequest = null;
   const suggestCache = new Map();
   const SUGGEST_CACHE_LIMIT = 60;
+  // Short enough that a folder or project created a minute ago can still be
+  // found by a query typed before it existed. Without an expiry the cache would
+  // quietly disagree with the disk.
+  const SUGGEST_TTL_MS = 30_000;
+
+  function cachedSuggest(key) {
+    const hit = suggestCache.get(key);
+    if (!hit) return null;
+    if (Date.now() - hit.at >= SUGGEST_TTL_MS) {
+      suggestCache.delete(key);
+      return null;
+    }
+    return hit.result;
+  }
 
   function cancelPickerRequest() {
     if (pickerRequest) {
@@ -1052,7 +1066,7 @@
 
     const query = typed;
     const key = (state.picker.root || "") + "\n" + query;
-    const cached = suggestCache.get(key);
+    const cached = cachedSuggest(key);
     if (cached) {
       applyPickerResult(cached, query, selectPath);
       return;
@@ -1087,7 +1101,7 @@
     }
 
     if (ui.projectSearch.value.trim() !== query) return;
-    suggestCache.set(key, result);
+    suggestCache.set(key, { at: Date.now(), result });
     if (suggestCache.size > SUGGEST_CACHE_LIMIT) {
       suggestCache.delete(suggestCache.keys().next().value);
     }
