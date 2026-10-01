@@ -290,30 +290,31 @@ async function collectProjects(start, maxDepth) {
 const SUGGEST_MAX_DEPTH = 3;
 
 /**
- * A cached list of project directories under the user's home, used to offer
- * suggestions as they type. Built once per process and reused, so typing never
- * walks the disk.
+ * A cached list of project directories under a root folder, used to offer
+ * suggestions as they type. Defaults to the user's home, but the user can
+ * travel into any folder, so the cache is keyed by root rather than global.
  */
-let suggestionCache = null;
-let suggestionCacheAt = 0;
+const suggestionCache = new Map();
 const SUGGESTION_TTL_MS = 60_000;
 
-export async function suggestProjects() {
+export async function suggestProjects(root) {
+  const start = resolve(root || homedir());
+  const cached = suggestionCache.get(start);
   const now = Date.now();
-  if (suggestionCache && now - suggestionCacheAt < SUGGESTION_TTL_MS) {
-    return suggestionCache;
+  if (cached && now - cached.at < SUGGESTION_TTL_MS) {
+    return cached.items;
   }
-  const home = homedir();
-  if (!(await isDirectory(home))) return [];
+  if (!(await isDirectory(start))) return [];
+
   const t0 = Date.now();
-  suggestionCache = await collectProjects(home, SUGGEST_MAX_DEPTH);
-  suggestionCacheAt = now;
+  const items = await collectProjects(start, SUGGEST_MAX_DEPTH);
+  suggestionCache.set(start, { at: now, items });
   if (AUTH_TRACE) {
     console.log(
-      `[projects] indexed ${suggestionCache.length} project(s) under home in ${Date.now() - t0}ms`,
+      `[projects] indexed ${items.length} project(s) under ${start} in ${Date.now() - t0}ms`,
     );
   }
-  return suggestionCache;
+  return items;
 }
 
 export { CONFIG_DIR, looksLikeProject, projectId, normalizeProject };

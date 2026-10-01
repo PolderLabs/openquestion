@@ -290,17 +290,30 @@ async function handleApi(req, res, url, session) {
     return;
   }
 
-  // Bounded search for the picker. Depth-capped on the server so a request can
-  // never turn into a full-disk walk.
-  // Suggestions for the picker. Seeded from the user's home so they can type a
-  // name and find a project without knowing where it lives. Cached server-side,
-  // so this is cheap after the first call.
+  // Suggestions for the picker. The root is whatever the user is currently
+  // looking at, so it starts at their home folder and can be moved into any
+  // subfolder they travel into. Cached per root, so it is cheap after the first
+  // call.
   if (req.method === "GET" && path === "/api/suggest") {
-    const all = await suggestProjects();
+    const root = expandHome(url.searchParams.get("root") || "");
+    const all = await suggestProjects(root || undefined);
     const query = (url.searchParams.get("q") || "").trim();
     const limit = Math.min(Number(url.searchParams.get("limit") || 8) || 8, 40);
     const results = query ? filterSuggestions(all, query, limit) : all.slice(0, limit);
-    sendJson(res, 200, { total: all.length, results });
+    // The immediate children, so the user can step into a folder rather than
+    // being limited to whatever the index happened to find below the root.
+    const folders = (await listDirectories(root || undefined)).directories.map(
+      (dir) => ({ name: dir.name, path: dir.path, isProject: dir.isProject }),
+    );
+    sendJson(res, 200, {
+      // `root` is what was searched; `homeDir` is always the real home, so the
+      // UI can abbreviate the label and know when "up" should stop.
+      root: root || homedir(),
+      homeDir: homedir(),
+      total: all.length,
+      results,
+      folders,
+    });
     return;
   }
 

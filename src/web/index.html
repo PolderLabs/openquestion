@@ -156,6 +156,16 @@
       <h2>Add a project</h2>
 
       <div class="field-block">
+        <div class="picker-path">
+          <button class="button ghost icon-only" id="pickerBack" type="button"
+                  title="Up one folder" aria-label="Up one folder" disabled>
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M10 3L5 8l5 5" fill="none" stroke="currentColor"
+                    stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <span class="picker-root" id="pickerRoot">home</span>
+        </div>
         <div class="search-wrap">
           <svg class="search-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
@@ -165,7 +175,7 @@
                  autocomplete="off" spellcheck="false"
                  placeholder="Search projects by name">
         </div>
-        <p class="field-note" id="defaultDirStatus">Type a few letters. Searches your home folder.</p>
+        <p class="field-note" id="defaultDirStatus">Searching your home folder.</p>
       </div>
 
       <div class="picker-list" id="searchResults" role="listbox"

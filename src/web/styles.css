@@ -1250,6 +1250,55 @@ a {
   color: var(--text);
 }
 
+.picker-root {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.button.icon-only {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.button.icon-only svg {
+  pointer-events: none;
+}
+
+.button.icon-only:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Folders are navigation, not results, so they read differently from a
+   project: a chevron instead of a path, and no filled dot. */
+.picker-item.is-folder {
+  color: var(--text);
+}
+
+.picker-item.is-folder:hover {
+  background: var(--surface-2);
+}
+
+.picker-chevron {
+  margin-left: auto;
+  color: var(--subtle);
+  font-size: 15px;
+  line-height: 1;
+}
+
 .search-wrap {
   position: relative;
   display: flex;

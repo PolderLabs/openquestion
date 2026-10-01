@@ -71,6 +71,8 @@ that the new tree still parses, and prints a rollback command if it does not.
 
 ### Releases
 
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+
 Releases are git tags (`v0.2.2`), and `package.json` carries the same number.
 The tag is what `oq update` compares against.
 
@@ -144,24 +146,24 @@ questionnaire/questions/
 questionnaire/questionnaires/index.json
 ```
 
-In the app, the **+** next to Projects opens a two-step picker.
+In the app, the **+** next to Projects opens a search box. Suggestions appear
+immediately, before you type anything.
 
-**1. Point it at a folder.** Nothing is pre-filled and nothing is added
-automatically — you choose an existing directory, and oq remembers it for next
-time. **Browse** opens a folder browser if you would rather click than type.
-
-**2. Search inside it.** Type any part of a name. Matching is fuzzy, so `glo`
+Type a few letters of a project name and it filters. Matching is fuzzy, so `gf`
 finds `globalfrontio`, and the matched characters are highlighted so a hit is
-explainable rather than magic.
+explainable rather than magic. Each result shows the project name and its parent
+folder, which is what tells two same-named projects apart.
 
-The search walks **two levels** below that folder: enough to catch repos grouped
-under an org folder like `code/PolderLabs/site`, without wandering across the
-rest of the disk. `node_modules`, `dist`, `.git`, `venv` and similar are skipped,
-and it keeps descending past a monorepo so nested projects are still found.
-Scanning a large folder takes milliseconds.
+You are not limited to the top. The picker starts in your **home directory** and
+lists the immediate subfolders; click one to search inside it. The **‹** control
+goes back up, and pasting a full path jumps straight to that folder.
 
-**Browse folders instead** is the escape hatch for anything the search misses,
-including folders that are not projects yet.
+Each folder's index is three levels deep, built once and cached: about 40ms the
+first time, instant after. `node_modules`, `dist`, `.git`, `venv` and similar are
+skipped, and the walk keeps descending past a monorepo so nested projects are
+still found.
+
+**Browse** is the escape hatch for a folder the search does not surface.
 
 No native form controls are used anywhere: the questionnaire picker and the
 per-question dropdowns are custom listboxes, so they match the theme and work

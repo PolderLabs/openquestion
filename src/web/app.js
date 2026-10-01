@@ -18,6 +18,7 @@
     "progressFill", "progressDetail", "toc", "questions",
     "savebar", "saveState", "saveTarget", "reloadBtn", "saveBarBtn",
     "projectDialog", "defaultDirBrowse", "defaultDirStatus", "projectSearch",
+    "pickerBack", "pickerRoot",
     "searchResults", "browseBlock", "pickerPath", "pickerUp", "pickerList",
     "projectGit", "projectSave", "toastDialog", "toastTitle", "toastBody",
   ]) {
@@ -37,7 +38,9 @@
     dirty: false,
     // Picker state, kept across opens so the projects folder is remembered.
     defaultProjectDir: null,
-    suggestCache: null,
+    searchRoot: null,
+    subfolders: null,
+    homeDir: null,
     pickedPath: null,
     selectedQuestionnaire: null,
     selectOptions: [],
@@ -915,26 +918,38 @@
 
   // ---------- project picker ----------
 
-  // Suggestions come from the user's home folder, so typing a few letters is
-  // enough. There is no "choose a folder first" step and no need to know a path.
+  // Suggestions come from the folder you are currently in. That starts at your
+  // home directory, and each result row can be clicked to travel into a
+  // subfolder, so the search is not stuck at the top.
   function openPicker() {
     state.pickedPath = null;
-    state.suggestCache = null;
+    state.searchRoot = state.defaultProjectDir || null;
+    state.subfolders = null;
+    // Recomputed on open, so a session that travelled somewhere does not carry
+    // that folder into the next open.
+    state.homeDir = null;
     ui.projectSave.disabled = true;
     ui.browseBlock.hidden = true;
     ui.browseBlock.open = false;
     ui.projectSearch.value = "";
     ui.searchResults.replaceChildren();
-    setPickerNote("Type a few letters. Searches your home folder.");
     ui.projectDialog.showModal();
     ui.projectSearch.focus();
-    // Show something immediately rather than an empty box, so it is obvious the
-    // field is live before a single character is typed.
     runSearch();
   }
 
   function setPickerNote(text) {
     ui.defaultDirStatus.textContent = text;
+  }
+
+  /** Shows the current root, with home abbreviated so it stays readable. */
+  function renderRoot() {
+    const home = (state.homeDir || "").replace(/\/$/, "");
+    const root = state.searchRoot || home;
+    ui.pickerRoot.textContent = shortRoot(root);
+    ui.pickerRoot.title = root;
+    // Home is the floor: there is nowhere above it to go.
+    ui.pickerBack.disabled = !state.searchRoot || root === home;
   }
 
   let searchTimer = null;
@@ -945,38 +960,52 @@
   }
 
   async function runSearch() {
-    const query = ui.projectSearch.value.trim();
+    const typed = ui.projectSearch.value.trim();
+
+    // A pasted path is a location, not a name to filter by. Navigating there is
+    // what makes a full path pasted from a shell or a config file work.
+    if (typed.includes("/")) {
+      setPickerNote("Checking…");
+      try {
+        const listing = await api("/api/directories?path=" + encodeURIComponent(typed));
+        await enterFolder(listing.path, { clearField: true });
+        return;
+      } catch {
+        // Not a folder. Fall through and treat it as a search term.
+      }
+    }
+
+    const query = typed;
     setPickerNote("Searching…");
     try {
-      const result = await api(
-        "/api/suggest?q=" + encodeURIComponent(query) + "&limit=8",
-      );
-      state.suggestCache = result;
+      const params = new URLSearchParams({ q: query, limit: "8" });
+      if (state.searchRoot) params.set("root", state.searchRoot);
+      const result = await api("/api/suggest?" + params.toString());
+
+      // `root` is whatever we searched; `homeDir` is the real home and must only
+      // be set once. Overwriting it with the current root is what made every
+      // folder after the first display as "~" with the back button disabled.
+      if (!state.homeDir) state.homeDir = result.homeDir || result.root;
+      state.subfolders = result.folders || [];
+      renderRoot();
+
       // A late response must not overwrite what the user has since typed.
       if (ui.projectSearch.value.trim() !== query) return;
 
       renderSearchResults(result.results, query);
-      if (result.results.length === 0) {
+      const inRoot = result.total;
+      if (result.results.length === 0 && state.subfolders.length === 0) {
         setPickerNote(
           query
-            ? "No match in your home folder. Try fewer letters, or browse."
-            : `No projects found yet in your home folder.`,
+            ? "Nothing here. Try fewer letters, or step into a folder below."
+            : "No projects in this folder. Step into a subfolder below, or up.",
         );
       } else if (query) {
         setPickerNote(
-          result.results.length +
-            " of " +
-            result.total +
-            " project" +
-            (result.total === 1 ? "" : "s"),
+          result.results.length + " of " + inRoot + " in " + shortRoot(result.root),
         );
       } else {
-        setPickerNote(
-          result.total +
-            " project" +
-            (result.total === 1 ? "" : "s") +
-            " found in your home folder",
-        );
+        setPickerNote(inRoot + " project" + (inRoot === 1 ? "" : "s") + " in " + shortRoot(result.root));
       }
     } catch (error) {
       setPickerNote(error.message);
@@ -984,15 +1013,57 @@
     }
   }
 
+  function shortRoot(root) {
+    const home = (state.homeDir || "").replace(/\/$/, "");
+    return home && root.startsWith(home) ? "~" + root.slice(home.length) : root;
+  }
+
+  /** Travel into a subfolder and search from there. */
+  async function enterFolder(path, { clearField = false } = {}) {
+    state.searchRoot = path;
+    state.pickedPath = null;
+    if (clearField) ui.projectSearch.value = "";
+    ui.projectSave.disabled = true;
+    await runSearch();
+  }
+
+  async function goUp() {
+    if (!state.searchRoot || !state.homeDir) return;
+    if (state.searchRoot === state.homeDir) return;
+    const parent =
+      state.searchRoot.replace(/\/+$/, "").split("/").slice(0, -1).join("/") ||
+      "/";
+    await enterFolder(parent);
+  }
+
 
   function renderSearchResults(items, query) {
     ui.searchResults.replaceChildren();
 
-    if (items.length === 0) {
-      if (!state.defaultProjectDir) return;
+    // Subfolders come first, so it is obvious the search is not limited to the
+    // current level: click one to search inside it.
+    for (const folder of state.subfolders || []) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "picker-item is-folder";
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      const name = document.createElement("span");
+      name.className = "picker-label";
+      highlightMatch(name, folder.name, query);
+      const chevron = document.createElement("span");
+      chevron.className = "picker-chevron";
+      chevron.textContent = "›";
+      button.append(dot, name, chevron);
+      button.addEventListener("click", () => enterFolder(folder.path));
+      ui.searchResults.append(button);
+    }
+
+    if (items.length === 0 && (state.subfolders || []).length === 0) {
+      if (!state.searchRoot) return;
       const empty = document.createElement("p");
       empty.className = "picker-empty";
-      empty.textContent = "No match. Try part of a name, or browse folders.";
+      empty.textContent = "Nothing here.";
       ui.searchResults.append(empty);
       return;
     }
@@ -1169,6 +1240,7 @@
   // One field: it is a folder to search, or a name to search for.
   ui.projectSearch.addEventListener("input", onSearchInput);
   ui.projectSearch.addEventListener("change", runSearch);
+  ui.pickerBack.addEventListener("click", goUp);
   ui.defaultDirBrowse.addEventListener("click", async () => {
     ui.browseBlock.hidden = false;
     ui.browseBlock.open = true;
