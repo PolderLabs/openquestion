@@ -9,6 +9,19 @@ The version follows semantic versioning:
 - **minor** — new features, additive changes
 - **major** — breaking changes, such as a config or answer-file format change
 
+## v0.4.3
+
+### Fixed
+
+- A single-choice question accepted more than one answer. Its radio buttons had
+  no shared `name`, so every option was its own group and the browser never
+  unchecked the previous one. The saved answer was the first checked option,
+  which did not have to be the one on screen.
+- The picker's suggestion cache never expired, so a query typed once was
+  answered from memory for the rest of the session and a folder or project
+  created after it stayed invisible until a reload. Entries now expire after
+  30 seconds, which is under the 60 second server index lifetime.
+
 ## v0.4.0
 
 ### Added

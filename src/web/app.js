@@ -722,6 +722,9 @@
     const input = document.createElement("input");
     input.type = type;
     input.dataset.answerFor = question.id;
+    // Radios are only mutually exclusive when they share a name. Without one,
+    // every option is its own group and a "choose one" question takes several.
+    if (type === "radio") input.name = "answer-" + question.id;
     input.value = String(item.value);
     input.checked =
       type === "radio"
