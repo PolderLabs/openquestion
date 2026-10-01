@@ -24,7 +24,7 @@ The version follows semantic versioning:
 - `Add project` adds the folder you are in when nothing is selected, so
   choosing a directory and adding it is a single action. A folder does not have
   to contain a questionnaire to be added, and one without any shows an empty
-  project instead of a red error.
+  project instead of a blank pane or a red error.
 - `Tab` completes the highlighted entry: it opens a folder, or fills in a
   project's name and leaves that row selected for `Enter`.
 - `Up`/`Down` move through the list. The keyboard and the mouse drive the same

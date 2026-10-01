@@ -165,10 +165,15 @@
   /** Decide which of dash / empty / sheet is on screen. */
   function renderMain() {
     const hasProject = Boolean(state.projectId);
+    const hasQuestionnaire = Boolean(state.questionnaire);
     ui.dash.hidden = hasProject || state.projects.length === 0;
-    ui.emptyState.hidden = hasProject || state.projects.length > 0;
-    ui.sheet.hidden = !state.questionnaire;
-    ui.savebar.hidden = !state.questionnaire;
+    // The empty state is the fallback for "there is nothing to show here": no
+    // projects at all, or a project with no questionnaire to open. Hiding it for
+    // any open project left a blank pane, which reads as a broken app.
+    ui.emptyState.hidden =
+      hasQuestionnaire || (state.projects.length > 0 && !hasProject);
+    ui.sheet.hidden = !hasQuestionnaire;
+    ui.savebar.hidden = !hasQuestionnaire;
 
     // The questionnaire picker and Save only mean something once a project is
     // open. Leaving a disabled "No questionnaires" dropdown and a dead Save
@@ -532,6 +537,12 @@
     ui.questions.replaceChildren();
     ui.toc.replaceChildren();
 
+    // The heading is derived rather than fixed, because "No project open" over a
+    // project that simply has no questions yet is the one message that is
+    // always wrong.
+    ui.emptyState.querySelector("h1").textContent = state.projectId
+      ? "Nothing to show yet"
+      : "No project open";
     if (message) ui.emptyState.querySelector("p").textContent = message;
 
     if (!state.projectId) {
