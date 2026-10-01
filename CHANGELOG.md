@@ -59,6 +59,8 @@ The version follows semantic versioning:
 - `/api/directories` did not expand a leading `~`, so a path pasted into the
   picker or typed into Settings failed unless it was absolute.
 - Clearing a setting was ignored, so the "Home" button kept the old folder.
+- `oq release <patch|minor|major>` refused every release once one existed: the
+  guard checked the version being left behind instead of the one being cut.
 
 ## v0.3.0
 

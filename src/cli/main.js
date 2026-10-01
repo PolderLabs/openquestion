@@ -779,17 +779,19 @@ async function cmdRelease(args) {
   const branch = (await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], root)).trim();
   if (branch === "HEAD") return fail("Detached HEAD; check out a branch first.");
 
-  // Never tag the same version twice: it would make the release ambiguous.
-  const existing = await run("git", ["tag", "--list", "v" + currentRaw], root, true);
-  if (existing.trim()) {
-    return fail(
-      `v${currentRaw} is already tagged.\n` +
-        `Bump package.json first, or use oq release status to see where you are.`,
-    );
-  }
-
   const next = `${current.major + bump[0]}.${current.minor + bump[1]}.${current.patch + bump[2]}`;
   const tag = `v${next}`;
+
+  // The guard is on the version being cut, not the one being left behind. A
+  // repository sits on its last release by definition, so checking the current
+  // version refused every release the moment one had been made.
+  const existing = await run("git", ["tag", "--list", tag], root, true);
+  if (existing.trim()) {
+    return fail(
+      `${tag} is already tagged.\n` +
+        `Pick a larger bump, or run oq release status to see where you are.`,
+    );
+  }
 
   await run("node", [
     "-e",
