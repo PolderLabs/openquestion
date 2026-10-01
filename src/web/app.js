@@ -11,13 +11,16 @@
     "rail", "railToggle", "railOpen", "projectList", "projectEmpty",
     "addProjectBtn", "modeLocal", "modeGithub", "identityInput",
     "statusDot", "statusText", "crumbProject", "crumbQuestionnaire",
-    "questionnaireSelect", "saveBtn", "content", "dash", "dashList",
+    "questionnaireSelect", "cselectTrigger", "cselectValue", "cselectMenu",
+    "saveBtn", "content", "dash", "dashList",
     "emptyState", "sheet",
     "qVersion", "qTitle", "qDescription", "progress", "progressPercent",
     "progressFill", "progressDetail", "toc", "questions",
     "savebar", "saveState", "saveTarget", "reloadBtn", "saveBarBtn",
-    "projectDialog", "pickerPath", "pickerUp", "pickerList", "projectGit",
-    "projectSave", "toastDialog", "toastTitle", "toastBody",
+    "projectDialog", "defaultDirBlock", "defaultDirPath", "defaultDirBrowse",
+    "defaultDirStatus", "searchBlock", "projectSearch", "searchResults",
+    "searchHint", "browseBlock", "pickerPath", "pickerUp", "pickerList",
+    "projectGit", "projectSave", "toastDialog", "toastTitle", "toastBody",
   ]) {
     ui[id] = el(id);
   }
@@ -33,6 +36,13 @@
     comments: {},
     remoteSha: null,
     dirty: false,
+    // Picker state, kept across opens so the projects folder is remembered.
+    defaultProjectDir: null,
+    searchRoot: null,
+    searchResultsCache: null,
+    pickedPath: null,
+    selectedQuestionnaire: null,
+    selectOptions: [],
   };
 
   const SUPPORTED_TYPES = new Set([
@@ -216,8 +226,8 @@
     // Open the first questionnaire so choosing a project lands on something
     // useful instead of an empty pane. The user still chose the project; this
     // only picks between that project's own questionnaires.
-    if (ui.questionnaireSelect.value) {
-      await openQuestionnaire(ui.questionnaireSelect.value);
+    if (state.selectedQuestionnaire) {
+      await openQuestionnaire(state.selectedQuestionnaire);
     }
   }
 
@@ -247,30 +257,106 @@
   }
 
   function renderManifest() {
-    const select = ui.questionnaireSelect;
-    const previous = select.value;
-    select.replaceChildren();
-
     const items = state.manifest?.manifest?.questionnaires || [];
-    select.disabled = items.length === 0;
+    const previous = state.selectedQuestionnaire;
+
+    ui.cselectTrigger.disabled = items.length === 0;
 
     if (items.length === 0) {
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "No questionnaires";
-      select.append(option);
+      setSelectValue("");
+      setSelectLabel("No questionnaires");
       ui.saveBtn.disabled = true;
+      state.selectedQuestionnaire = null;
       return;
     }
 
-    for (const item of items) {
-      const option = document.createElement("option");
-      option.value = item.id;
-      option.textContent = item.title + (item.status === "active" ? " · active" : "");
-      select.append(option);
-    }
+    setSelectOptions(
+      items.map((item) => ({
+        value: item.id,
+        label: item.title,
+        note: item.status === "active" ? "active" : "",
+      })),
+    );
 
-    select.value = items.some((i) => i.id === previous) ? previous : items[0].id;
+    const next = items.some((i) => i.id === previous) ? previous : items[0].id;
+    state.selectedQuestionnaire = next;
+    setSelectValue(next);
+  }
+
+  // ---------- custom select ----------
+  //
+  // A native <select> renders its dropdown with the OS widget, which cannot be
+  // themed and ignores the dark palette entirely. This is a listbox that looks
+  // like the rest of the app, and keeps keyboard and screen-reader behaviour.
+
+  function setSelectLabel(text) {
+    ui.cselectValue.textContent = text;
+  }
+
+  function setSelectOptions(options) {
+    ui.selectOptions = options;
+    setSelectMenu();
+  }
+
+  function setSelectValue(value) {
+    state.selectedQuestionnaire = value;
+    const match = (ui.selectOptions || []).find((o) => o.value === value);
+    setSelectLabel(match ? match.label : "Choose…");
+    setSelectMenu();
+  }
+
+  function setSelectMenu() {
+    const menu = ui.cselectMenu;
+    menu.replaceChildren();
+    for (const option of ui.selectOptions || []) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "cselect-option";
+      item.setAttribute("role", "option");
+      const selected = option.value === state.selectedQuestionnaire;
+      item.setAttribute("aria-selected", String(selected));
+      if (selected) item.classList.add("is-selected");
+
+      const label = document.createElement("span");
+      label.className = "cselect-option-label";
+      label.textContent = option.label;
+      item.append(label);
+
+      if (option.note) {
+        const note = document.createElement("span");
+        note.className = "cselect-option-note";
+        note.textContent = option.note;
+        item.append(note);
+      }
+
+      item.addEventListener("click", () => {
+        setSelectValue(option.value);
+        closeSelect();
+        openQuestionnaire(option.value);
+      });
+      menu.append(item);
+    }
+  }
+
+  function openSelect() {
+    if (ui.cselectTrigger.disabled) return;
+    ui.cselectMenu.hidden = false;
+    ui.cselectTrigger.setAttribute("aria-expanded", "true");
+    // Highlight the current choice so Enter is a no-op rather than a surprise.
+    const selected = ui.cselectMenu.querySelector(".is-selected") ||
+      ui.cselectMenu.querySelector(".cselect-option");
+    selected?.focus();
+  }
+
+  function closeSelect({ focusTrigger = false } = {}) {
+    ui.cselectMenu.hidden = true;
+    ui.cselectTrigger.setAttribute("aria-expanded", "false");
+    if (focusTrigger) ui.cselectTrigger.focus();
+  }
+
+  function toggleSelect() {
+    if (ui.cselectMenu.hidden) openSelect();
+    else closeSelect({ focusTrigger: true });
   }
 
   async function openQuestionnaire(id) {
@@ -532,6 +618,12 @@
 
   function renderControl(question) {
     const current = state.answers[question.id];
+    // Dropdowns carry the question id on the wrapper so the shared collector
+    // can coerce the chosen string back to the question's real type.
+    const tag = (node) => {
+      node.dataset.answerFor = question.id;
+      return node;
+    };
 
     if (question.type === "info") {
       const p = document.createElement("p");
@@ -551,27 +643,25 @@
     }
 
     if (question.type === "select") {
-      const select = document.createElement("select");
-      select.dataset.answerFor = question.id;
-      select.append(new Option("Choose…", ""));
-      for (const item of question.options || []) {
-        const option = new Option(item.label, String(item.value));
-        option.selected = String(current ?? "") === String(item.value);
-        select.append(option);
-      }
-      return select;
+      return tag(renderDropdown({
+        value: String(current ?? ""),
+        placeholder: "Choose…",
+        options: (question.options || []).map((item) => ({
+          value: String(item.value),
+          label: item.label,
+        })),
+      }));
     }
 
     if (question.type === "boolean") {
-      const select = document.createElement("select");
-      select.dataset.answerFor = question.id;
-      select.append(new Option("Choose…", ""));
-      const yes = new Option("Yes", "true");
-      const no = new Option("No", "false");
-      yes.selected = current === true;
-      no.selected = current === false;
-      select.append(yes, no);
-      return select;
+      return tag(renderDropdown({
+        value: current === true ? "true" : current === false ? "false" : "",
+        placeholder: "Choose…",
+        options: [
+          { value: "true", label: "Yes" },
+          { value: "false", label: "No" },
+        ],
+      }));
     }
 
     if (question.type === "textarea") {
@@ -729,11 +819,283 @@
     }
   }
 
+  /**
+   * A themed dropdown for a single answer. Same component as the questionnaire
+   * picker, so no native select ever appears. Emits the chosen string through
+   * the normal collect() path, which already knows how to coerce the value back
+   * to the question's type.
+   */
+  function renderDropdown({ value, placeholder, options }) {
+    const wrap = document.createElement("div");
+    wrap.className = "cdropdown";
+
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "cdropdown-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+
+    const label = document.createElement("span");
+    label.className = "cdropdown-value";
+    const caret = document.createElement("span");
+    caret.className = "cdropdown-caret";
+    caret.setAttribute("aria-hidden", "true");
+    trigger.append(label, caret);
+
+    const menu = document.createElement("div");
+    menu.className = "cdropdown-menu";
+    menu.setAttribute("role", "listbox");
+    menu.hidden = true;
+
+    let current = value;
+
+    const paint = () => {
+      const match = options.find((o) => o.value === current);
+      label.textContent = match ? match.label : placeholder;
+      label.classList.toggle("is-placeholder", !match);
+    };
+
+    const close = () => {
+      menu.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+    };
+
+    const open = () => {
+      menu.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+    };
+
+    const choose = (next) => {
+      current = next;
+      paint();
+      close();
+      // Route through the shared collector so the stored type stays correct:
+      // booleans become real booleans, numbers real numbers.
+      const proxy = document.createElement("input");
+      proxy.dataset.answerFor = wrap.dataset.answerFor;
+      proxy.value = next;
+      collect(proxy);
+    };
+
+    for (const option of options) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "cdropdown-option";
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(option.value === current));
+      if (option.value === current) item.classList.add("is-selected");
+      item.textContent = option.label;
+      item.addEventListener("click", () => choose(option.value));
+      menu.append(item);
+    }
+
+    trigger.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (menu.hidden) open();
+      else close();
+    });
+    trigger.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "Enter", " "].includes(event.key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        open();
+      }
+    });
+    // Closing on an outside click, scoped to this dropdown, keeps a 42-question
+    // form from stacking dozens of document listeners.
+    wrap.addEventListener("click", (event) => event.stopPropagation());
+    document.addEventListener("click", () => {
+      if (!menu.hidden) close();
+    });
+
+    paint();
+    wrap.append(trigger, menu);
+    return wrap;
+  }
+
   // ---------- project picker ----------
 
-  async function openPicker() {
+  // The picker is two steps because the two questions are different: where to
+  // look, and what to add. The projects folder is never pre-filled - the user
+  // points it at an existing directory, and only then does search run.
+  function openPicker() {
+    state.pickedPath = null;
+    ui.projectSave.disabled = true;
+    ui.defaultDirBlock.hidden = false;
+    ui.searchBlock.hidden = true;
+    ui.browseBlock.hidden = true;
+    ui.defaultDirPath.value = state.defaultProjectDir || "";
+    ui.defaultDirStatus.textContent = "";
+    ui.projectSearch.value = "";
+    ui.searchResults.replaceChildren();
     ui.projectDialog.showModal();
-    await browseInto(state.pickerStart || "");
+    ui.defaultDirPath.focus();
+  }
+
+  /** Validates the chosen folder and, if it is usable, reveals the search step. */
+  async function useDefaultDir() {
+    const raw = ui.defaultDirPath.value.trim().replace(/^~(?=$|\/)/, "");
+    if (!raw) {
+      ui.defaultDirStatus.textContent = "Choose a folder to search.";
+      return;
+    }
+    ui.defaultDirStatus.textContent = "Checking…";
+
+    let listing;
+    try {
+      listing = await api("/api/directories?path=" + encodeURIComponent(raw));
+    } catch (error) {
+      ui.defaultDirStatus.textContent = error.message;
+      return;
+    }
+
+    state.defaultProjectDir = listing.path;
+    state.searchRoot = listing.path;
+    ui.defaultDirStatus.textContent = "Searching " + listing.path;
+    ui.searchBlock.hidden = false;
+    ui.browseBlock.hidden = false;
+    ui.searchHint.textContent = "Scanning…";
+    await loadSearchResults();
+    renderSearchResults(state.searchResultsCache || [], "");
+    ui.projectSearch.focus();
+  }
+
+  let searchTimer = null;
+
+  function scheduleSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 140);
+  }
+
+  /**
+   * Fuzzy-matches the query against cached search results. Filtering runs on
+   * whatever the server already returned, so typing is instant and does not
+   * re-walk the filesystem on every keystroke.
+   */
+  function runSearch() {
+    const query = ui.projectSearch.value.trim();
+    if (!state.searchResultsCache) return;
+    const all = state.searchResultsCache;
+    const ranked = query ? rankMatches(all, query) : all;
+    renderSearchResults(ranked, query);
+  }
+
+  /**
+   * Subsequence match with a bonus for consecutive characters and for matches at
+   * word starts, so "gfq" finds "globalfrontio" and "oq" finds "openquestion"
+   * faster than "oe" would.
+   */
+  function rankMatches(items, query) {
+    const needle = query.toLowerCase();
+    const scored = [];
+    for (const item of items) {
+      const score = fuzzyScore(item.name, needle);
+      if (score > 0) scored.push({ item, score });
+    }
+    scored.sort((a, b) => b.score - a.score || a.item.depth - b.item.depth);
+    return scored.map((entry) => entry.item);
+  }
+
+  function fuzzyScore(text, needle) {
+    const haystack = text.toLowerCase();
+    if (haystack.includes(needle)) {
+      // An exact substring is the strongest signal; earlier is better.
+      return 1000 - haystack.indexOf(needle);
+    }
+    let score = 0;
+    let index = 0;
+    let streak = 0;
+    for (const char of needle) {
+      const found = haystack.indexOf(char, index);
+      if (found === -1) return 0;
+      // Consecutive characters and word starts are worth more.
+      if (found === index) streak += 1;
+      else streak = 0;
+      score += 10 + streak * 5;
+      if (found === 0 || /[-_/ ]/.test(haystack[found - 1])) score += 15;
+      index = found + 1;
+    }
+    return score;
+  }
+
+  async function loadSearchResults() {
+    if (!state.searchRoot) return;
+    try {
+      const result = await api("/api/search?root=" + encodeURIComponent(state.searchRoot));
+      state.searchResultsCache = result.results;
+      ui.searchHint.textContent =
+        result.results.length === 0
+          ? "No projects found here."
+          : result.results.length + " found · two levels deep";
+    } catch (error) {
+      state.searchResultsCache = [];
+      ui.searchHint.textContent = error.message;
+    }
+  }
+
+  function renderSearchResults(items, query) {
+    ui.searchResults.replaceChildren();
+
+    if (items.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "picker-empty";
+      empty.textContent = state.searchResultsCache && state.searchResultsCache.length === 0
+        ? "No projects in this folder. Use Browse folders instead."
+        : "No match. Try part of a name, or use Browse folders.";
+      ui.searchResults.append(empty);
+      return;
+    }
+
+    for (const item of items) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "picker-item is-project" + (item.path === state.pickedPath ? " is-picked" : "");
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(item.path === state.pickedPath));
+
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      const label = document.createElement("span");
+      label.className = "picker-label";
+      highlightMatch(label, item.name, query);
+      const path = document.createElement("span");
+      path.className = "picker-sub";
+      path.textContent = item.path;
+
+      button.append(dot, label, path);
+      button.addEventListener("click", () => {
+        state.pickedPath = item.path;
+        ui.projectSave.disabled = false;
+        renderSearchResults(items, query);
+      });
+      ui.searchResults.append(button);
+    }
+  }
+
+  /** Marks the matched characters so the user can see why a row matched. */
+  function highlightMatch(container, text, query) {
+    const needle = (query || "").toLowerCase();
+    if (!needle) {
+      container.textContent = text;
+      return;
+    }
+    let cursor = 0;
+    const lower = text.toLowerCase();
+    for (const char of needle) {
+      const at = lower.indexOf(char, cursor);
+      if (at === -1) continue;
+      if (at > cursor) {
+        container.append(document.createTextNode(text.slice(cursor, at)));
+      }
+      const mark = document.createElement("span");
+      mark.className = "hit";
+      mark.textContent = text[at];
+      container.append(mark);
+      cursor = at + 1;
+    }
+    if (cursor < text.length) {
+      container.append(document.createTextNode(text.slice(cursor)));
+    }
   }
 
   async function browseInto(path) {
@@ -761,6 +1123,8 @@
         const name = document.createElement("span");
         name.textContent = dir.name;
         button.append(dot, name);
+        // Clicking a folder navigates; using one is explicit, so it is not
+        // selected implicitly just by being on screen.
         button.addEventListener("click", () => browseInto(dir.path));
         ui.pickerList.append(button);
       }
@@ -772,7 +1136,9 @@
   }
 
   async function addSelectedProject() {
-    const path = ui.pickerPath.value.trim();
+    // A picked search result wins; otherwise the manually browsed path is used,
+    // which is how a folder that is not a project can still be added.
+    const path = state.pickedPath || ui.pickerPath.value.trim();
     if (!path) return;
     setStatus("Adding…", "busy");
     try {
@@ -783,12 +1149,39 @@
           commitOnWrite: ui.projectGit.checked,
         }),
       });
+      // Remember the folder so the next add starts from the same place.
+      if (state.defaultProjectDir) {
+        await saveDefaultDir(state.defaultProjectDir);
+      }
       ui.projectDialog.close();
       await loadProjects();
       await selectProject(project.id);
       setStatus("Added " + project.name, "ok");
     } catch (error) {
       toast("Could not add project", error.message);
+    }
+  }
+
+  async function saveDefaultDir(path) {
+    try {
+      await api("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({ defaultProjectDir: path }),
+      });
+    } catch {
+      // A failure to remember the folder is not worth blocking the add.
+    }
+  }
+
+  /** Restores the remembered projects folder so the picker reopens there. */
+  async function loadSettings() {
+    try {
+      const settings = await api("/api/settings");
+      if (settings.defaultProjectDir) {
+        state.defaultProjectDir = settings.defaultProjectDir;
+      }
+    } catch {
+      // Settings are a convenience; the app works without them.
     }
   }
 
@@ -820,6 +1213,24 @@
   });
 
   ui.addProjectBtn.addEventListener("click", () => openPicker());
+
+  // The projects folder: accept a pasted path, or pick one by browsing.
+  ui.defaultDirPath.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      useDefaultDir();
+    }
+  });
+  ui.defaultDirPath.addEventListener("change", () => useDefaultDir());
+  ui.defaultDirBrowse.addEventListener("click", async () => {
+    ui.browseBlock.hidden = false;
+    ui.browseBlock.open = true;
+    await browseInto(state.defaultProjectDir || "");
+  });
+
+  // Search-as-you-type over the cached results.
+  ui.projectSearch.addEventListener("input", scheduleSearch);
+
   ui.pickerUp.addEventListener("click", async () => {
     const path = ui.pickerPath.value;
     const parent = path.replace(/\/[^/]*$/, "") || "/";
@@ -842,8 +1253,33 @@
   });
   ui.projectDialog.addEventListener("close", () => setStatus("Ready", "ok"));
 
-  ui.questionnaireSelect.addEventListener("change", () => {
-    openQuestionnaire(ui.questionnaireSelect.value);
+  // Custom select wiring: click, keyboard, and close-on-outside-click.
+  ui.cselectTrigger.addEventListener("click", toggleSelect);
+  ui.cselectTrigger.addEventListener("keydown", (event) => {
+    if (["ArrowDown", "Enter", " "].includes(event.key)) {
+      event.preventDefault();
+      openSelect();
+    }
+  });
+  ui.cselectMenu.addEventListener("keydown", (event) => {
+    const options = [...ui.cselectMenu.querySelectorAll(".cselect-option")];
+    const index = options.indexOf(document.activeElement);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      options[Math.min(index + 1, options.length - 1)]?.focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (index <= 0) ui.cselectTrigger.focus();
+      else options[index - 1].focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeSelect({ focusTrigger: true });
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (ui.cselectMenu.hidden) return;
+    if (event.target.closest(".cselect")) return;
+    closeSelect();
   });
 
   ui.saveBtn.addEventListener("click", save);
@@ -885,6 +1321,7 @@
       // Land on the dashboard. No project is opened until one is chosen, so the
       // server has no default to guess and the choice stays with the user.
       await loadProjects();
+      await loadSettings();
 
       if (state.projects.length === 0) {
         setStatus("No projects", "error");

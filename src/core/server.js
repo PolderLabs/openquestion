@@ -17,6 +17,8 @@ import {
   removeProject,
   listDirectories,
   searchProjects,
+  loadConfig,
+  saveConfig,
 } from "../projects/registry.js";
 import { resolve } from "node:path";
 import {
@@ -292,6 +294,29 @@ async function handleApi(req, res, url, session) {
       ? matches.filter((m) => m.name.toLowerCase().includes(query))
       : matches;
     sendJson(res, 200, { root: resolve(root), results: filtered });
+    return;
+  }
+
+  // Persisted UI settings. Only the projects folder is stored today; it is
+  // remembered so the picker reopens where the user last worked, and it is
+  // never used to auto-add anything without an explicit pick.
+  if (req.method === "GET" && path === "/api/settings") {
+    const config = await loadConfig();
+    sendJson(res, 200, {
+      defaultProjectDir: config.settings?.defaultProjectDir || null,
+    });
+    return;
+  }
+
+  if (req.method === "POST" && path === "/api/settings") {
+    const body = await readBody(req);
+    const config = await loadConfig();
+    config.settings = config.settings || {};
+    if (typeof body.defaultProjectDir === "string") {
+      config.settings.defaultProjectDir = body.defaultProjectDir.trim() || null;
+    }
+    await saveConfig(config);
+    sendJson(res, 200, { ok: true });
     return;
   }
 

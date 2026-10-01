@@ -114,9 +114,28 @@ questionnaire/questions/
 questionnaire/questionnaires/index.json
 ```
 
-In the app, the **+** next to Projects opens a filesystem browser. Type or paste a
-path and press Enter, or click through folders. Folders that look like projects
-are marked with a dot.
+In the app, the **+** next to Projects opens a two-step picker.
+
+**1. Point it at a folder.** Nothing is pre-filled and nothing is added
+automatically — you choose an existing directory, and oq remembers it for next
+time. **Browse** opens a folder browser if you would rather click than type.
+
+**2. Search inside it.** Type any part of a name. Matching is fuzzy, so `glo`
+finds `globalfrontio`, and the matched characters are highlighted so a hit is
+explainable rather than magic.
+
+The search walks **two levels** below that folder: enough to catch repos grouped
+under an org folder like `code/PolderLabs/site`, without wandering across the
+rest of the disk. `node_modules`, `dist`, `.git`, `venv` and similar are skipped,
+and it keeps descending past a monorepo so nested projects are still found.
+Scanning a large folder takes milliseconds.
+
+**Browse folders instead** is the escape hatch for anything the search misses,
+including folders that are not projects yet.
+
+No native form controls are used anywhere: the questionnaire picker and the
+per-question dropdowns are custom listboxes, so they match the theme and work
+with the keyboard.
 
 Config lives at `~/.config/openquestion/projects.json` (override with
 `OPENQUESTION_CONFIG_DIR`):
@@ -186,6 +205,8 @@ receives an HttpOnly session cookie.
 | `POST` | `/api/projects` | Add a project |
 | `DELETE` | `/api/projects/:id` | Remove a project |
 | `GET` | `/api/directories?path=` | Browse folders for the picker |
+| `GET` | `/api/search?root=` | Find projects two levels below a folder |
+| `GET`/`POST` | `/api/settings` | Remembered projects folder |
 | `GET` | `/api/manifest` | Manifest plus the resolved respondent |
 | `GET` | `/api/questionnaire?path=` | One questionnaire document |
 | `GET` | `/api/answers?questionnaireId=` | Saved answers, or `exists: false` |

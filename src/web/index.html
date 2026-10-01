@@ -79,9 +79,20 @@
           <span id="crumbQuestionnaire" class="crumb-current">Select a questionnaire</span>
         </div>
         <div class="topbar-actions">
-          <select class="select" id="questionnaireSelect" aria-label="Choose questionnaire" disabled>
-            <option value="">No questionnaires</option>
-          </select>
+          <!-- Custom select: a native <select> cannot be styled to match the
+               rest of the UI, and its dropdown ignores the theme entirely. -->
+          <div class="cselect" id="questionnaireSelect" hidden>
+            <button class="cselect-trigger" id="cselectTrigger" type="button"
+                    aria-haspopup="listbox" aria-expanded="false" disabled>
+              <span class="cselect-value" id="cselectValue">No questionnaires</span>
+              <svg class="cselect-caret" viewBox="0 0 10 6" width="9" height="6" aria-hidden="true">
+                <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div class="cselect-menu" id="cselectMenu" role="listbox"
+                 aria-label="Choose questionnaire" hidden></div>
+          </div>
           <button class="button primary" id="saveBtn" disabled>Save</button>
         </div>
       </header>
@@ -138,8 +149,9 @@
     </main>
   </div>
 
-  <!-- Add-project dialog with a filesystem browser. -->
-  <dialog class="dialog" id="projectDialog">
+  <!-- Add-project dialog: default directory, bounded search, and a manual
+       browser for anything the search does not surface. -->
+  <dialog class="dialog wide" id="projectDialog">
     <form method="dialog" class="dialog-card">
       <h2>Add a project</h2>
       <p class="dialog-note">
@@ -147,13 +159,42 @@
         <code>questionnaire/questions/</code> directory.
       </p>
 
-      <div class="picker">
+      <!-- Step 1: where to look. Not pre-filled, because guessing a directory
+           and silently adding projects from it would be surprising. -->
+      <div class="field-block" id="defaultDirBlock" hidden>
+        <div class="field-head">
+          <label class="field-label" for="defaultDirPath">Projects folder</label>
+          <span class="field-hint">Searches this folder and one level below it.</span>
+        </div>
+        <div class="picker-path">
+          <input class="input" id="defaultDirPath" type="text" spellcheck="false"
+                 autocomplete="off" placeholder="Choose an existing folder, e.g. ~/code">
+          <button class="button ghost" id="defaultDirBrowse" type="button">Browse</button>
+        </div>
+        <p class="field-note" id="defaultDirStatus"></p>
+      </div>
+
+      <!-- Step 2: search inside it. -->
+      <div class="field-block" id="searchBlock" hidden>
+        <div class="field-head">
+          <label class="field-label" for="projectSearch">Search for a project</label>
+          <span class="field-hint" id="searchHint"></span>
+        </div>
+        <input class="input" id="projectSearch" type="search" autocomplete="off"
+               spellcheck="false" placeholder="Start typing a name">
+        <div class="picker-list" id="searchResults" role="listbox"
+             aria-label="Matching projects"></div>
+      </div>
+
+      <!-- Fallback: browse manually. -->
+      <details class="field-block" id="browseBlock" hidden>
+        <summary class="field-head browse-summary">Browse folders instead</summary>
         <div class="picker-path">
           <input class="input" id="pickerPath" type="text" spellcheck="false" autocomplete="off">
           <button class="button ghost" id="pickerUp" type="button" title="Parent folder">Up</button>
         </div>
         <div class="picker-list" id="pickerList" role="listbox" aria-label="Folders"></div>
-      </div>
+      </details>
 
       <div class="dialog-row">
         <label class="check">
@@ -164,7 +205,7 @@
 
       <div class="dialog-actions">
         <button class="button ghost" value="cancel">Cancel</button>
-        <button class="button primary" id="projectSave" value="save">Add project</button>
+        <button class="button primary" id="projectSave" value="save" disabled>Add project</button>
       </div>
     </form>
   </dialog>
