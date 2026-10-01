@@ -104,6 +104,22 @@ async function cmdUpdate(args) {
     );
   }
 
+  // Refuse to self-update a working checkout. A developer running from a clone
+  // would otherwise have their working tree reset by their own tool, and
+  // "update" is not something you want triggering in the middle of editing.
+  if (!isInstallDir(root) && !args.includes("--allow-source")) {
+    return fail(
+      `${root} is a source checkout, not an install.
+      oq update only manages installs made by install.sh, so it will not
+      reset a working copy.
+
+      To update this checkout instead:
+        git -C ${root} pull
+
+      Re-run with --allow-source to override.`,
+    );
+  }
+
   const branch = (await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], root))
     .trim();
 
@@ -186,6 +202,12 @@ async function cmdUpdate(args) {
 /** The install root: two levels up from this file (src/cli -> root). */
 function installRoot() {
   return resolve(__dirname, "..", "..");
+}
+
+// install.sh writes this marker. Its absence means the user is running from a
+// clone they may be editing, which oq update must not touch.
+function isInstallDir(root) {
+  return existsSync(join(root, ".openquestion-install"));
 }
 
 function readVersion(root) {

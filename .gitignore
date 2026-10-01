@@ -10,6 +10,7 @@ coverage/
 projects.json
 .session-store.json
 .session-store.json.*.tmp
+.openquestion-install
 
 *.log
 .DS_Store

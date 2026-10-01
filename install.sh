@@ -86,6 +86,10 @@ main() {
 
   [ -f "$INSTALL_DIR/package.json" ] || die "install looks incomplete: no package.json in $INSTALL_DIR"
 
+  # Marker so `oq update` knows this is an install it may reset, rather than a
+  # working checkout someone is editing.
+  printf 'installed by install.sh\n' > "$INSTALL_DIR/.openquestion-install"
+
   mkdir -p "$BIN_DIR"
   # A small launcher rather than a symlink, so the tool keeps working if the
   # install directory moves and so `oq update` can find its own root.
