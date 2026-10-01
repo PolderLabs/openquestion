@@ -14,6 +14,10 @@ import { readFile, writeFile, mkdir, readdir, stat, realpath } from "node:fs/pro
 import { existsSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
 import { homedir } from "node:os";
+
+// The index build is the one slow operation in the picker, so it can be traced
+// separately from the per-request logging in the server.
+const AUTH_TRACE = process.env.OPENQUESTION_DEBUG !== "0";
 import { randomUUID } from "node:crypto";
 
 const CONFIG_DIR =
@@ -218,7 +222,12 @@ const SEARCH_MAX_RESULTS = 200;
 export async function searchProjects(root, { maxDepth = SEARCH_MAX_DEPTH } = {}) {
   const start = resolve(root);
   if (!(await isDirectory(start))) return [];
+  return collectProjects(start, maxDepth);
+}
 
+// Shared by searchProjects and the suggestion index, which differs only in how
+// deep it looks and whether it needs the depth recorded.
+async function collectProjects(start, maxDepth) {
   const found = [];
   const queue = [{ path: start, depth: 0 }];
 
@@ -273,6 +282,38 @@ export async function searchProjects(root, { maxDepth = SEARCH_MAX_DEPTH } = {})
   return found.sort(
     (a, b) => a.depth - b.depth || a.name.localeCompare(b.name),
   );
+}
+
+// The suggestion index looks a little deeper than the picker search, because
+// the whole point is to find something without knowing where it lives. It is
+// still bounded, and still skips the directories that hold thousands of files.
+const SUGGEST_MAX_DEPTH = 3;
+
+/**
+ * A cached list of project directories under the user's home, used to offer
+ * suggestions as they type. Built once per process and reused, so typing never
+ * walks the disk.
+ */
+let suggestionCache = null;
+let suggestionCacheAt = 0;
+const SUGGESTION_TTL_MS = 60_000;
+
+export async function suggestProjects() {
+  const now = Date.now();
+  if (suggestionCache && now - suggestionCacheAt < SUGGESTION_TTL_MS) {
+    return suggestionCache;
+  }
+  const home = homedir();
+  if (!(await isDirectory(home))) return [];
+  const t0 = Date.now();
+  suggestionCache = await collectProjects(home, SUGGEST_MAX_DEPTH);
+  suggestionCacheAt = now;
+  if (AUTH_TRACE) {
+    console.log(
+      `[projects] indexed ${suggestionCache.length} project(s) under home in ${Date.now() - t0}ms`,
+    );
+  }
+  return suggestionCache;
 }
 
 export { CONFIG_DIR, looksLikeProject, projectId, normalizeProject };

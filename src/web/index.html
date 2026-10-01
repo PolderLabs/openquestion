@@ -149,52 +149,27 @@
     </main>
   </div>
 
-  <!-- Add-project dialog: default directory, bounded search, and a manual
-       browser for anything the search does not surface. -->
+  <!-- Add-project dialog. One field: type a folder to search it, or a name to
+       search the folder you already pointed at. -->
   <dialog class="dialog wide" id="projectDialog">
     <form method="dialog" class="dialog-card">
       <h2>Add a project</h2>
-      <p class="dialog-note">
-        Choose a folder containing <code>questionnaire/manifest.json</code> or a
-        <code>questionnaire/questions/</code> directory.
-      </p>
 
-      <!-- Step 1: where to look. Not pre-filled, because guessing a directory
-           and silently adding projects from it would be surprising. -->
-      <div class="field-block" id="defaultDirBlock" hidden>
-        <div class="field-head">
-          <label class="field-label" for="defaultDirPath">Projects folder</label>
-          <span class="field-hint">Searches this folder and one level below it.</span>
+      <div class="field-block">
+        <div class="search-wrap">
+          <svg class="search-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="10.5" y1="10.5" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input class="input search-input" id="projectSearch" type="text"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="Search projects by name">
         </div>
-        <div class="picker-path">
-          <input class="input" id="defaultDirPath" type="text" spellcheck="false"
-                 autocomplete="off" placeholder="Choose an existing folder, e.g. ~/code">
-          <button class="button ghost" id="defaultDirBrowse" type="button">Browse</button>
-        </div>
-        <p class="field-note" id="defaultDirStatus"></p>
+        <p class="field-note" id="defaultDirStatus">Type a few letters. Searches your home folder.</p>
       </div>
 
-      <!-- Step 2: search inside it. -->
-      <div class="field-block" id="searchBlock" hidden>
-        <div class="field-head">
-          <label class="field-label" for="projectSearch">Search for a project</label>
-          <span class="field-hint" id="searchHint"></span>
-        </div>
-        <input class="input" id="projectSearch" type="search" autocomplete="off"
-               spellcheck="false" placeholder="Start typing a name">
-        <div class="picker-list" id="searchResults" role="listbox"
-             aria-label="Matching projects"></div>
-      </div>
-
-      <!-- Fallback: browse manually. -->
-      <details class="field-block" id="browseBlock" hidden>
-        <summary class="field-head browse-summary">Browse folders instead</summary>
-        <div class="picker-path">
-          <input class="input" id="pickerPath" type="text" spellcheck="false" autocomplete="off">
-          <button class="button ghost" id="pickerUp" type="button" title="Parent folder">Up</button>
-        </div>
-        <div class="picker-list" id="pickerList" role="listbox" aria-label="Folders"></div>
-      </details>
+      <div class="picker-list" id="searchResults" role="listbox"
+           aria-label="Matching projects"></div>
 
       <div class="dialog-row">
         <label class="check">
@@ -204,9 +179,20 @@
       </div>
 
       <div class="dialog-actions">
+        <button class="button ghost" id="defaultDirBrowse" type="button">Browse</button>
         <button class="button ghost" value="cancel">Cancel</button>
         <button class="button primary" id="projectSave" value="save" disabled>Add project</button>
       </div>
+
+      <!-- Escape hatch for folders the search does not surface. -->
+      <details class="field-block" id="browseBlock" hidden>
+        <summary class="field-head browse-summary">Browse folders instead</summary>
+        <div class="picker-path">
+          <input class="input" id="pickerPath" type="text" spellcheck="false" autocomplete="off">
+          <button class="button ghost" id="pickerUp" type="button" title="Parent folder">Up</button>
+        </div>
+        <div class="picker-list" id="pickerList" role="listbox" aria-label="Folders"></div>
+      </details>
     </form>
   </dialog>
 

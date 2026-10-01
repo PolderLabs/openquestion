@@ -6,7 +6,6 @@
 
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { join, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 
@@ -17,10 +16,12 @@ import {
   removeProject,
   listDirectories,
   searchProjects,
+  suggestProjects,
   loadConfig,
   saveConfig,
 } from "../projects/registry.js";
-import { resolve } from "node:path";
+import { join, dirname, extname, resolve } from "node:path";
+import { homedir } from "node:os";
 import {
   AuthError,
   NotFoundError,
@@ -256,10 +257,21 @@ async function handleApi(req, res, url, session) {
 
   if (req.method === "POST" && path === "/api/projects") {
     const body = await readBody(req);
-    if (!body.path) {
+    // The API speaks `path`; the registry stores `root`. Translating here keeps
+    // one name on the wire and one in config, instead of making every caller
+    // know both.
+    const requested = body.path || body.root;
+    if (!requested || typeof requested !== "string") {
       throw new ValidationError("A project path is required.", "invalid_project");
     }
-    const project = await addProject(body);
+    const project = await addProject({
+      name: body.name,
+      root: expandHome(requested.trim()),
+      storage: body.storage,
+      layout: body.layout,
+      github: body.github,
+      commitOnWrite: body.commitOnWrite === true,
+    });
     log("project added", project.id);
     sendJson(res, 201, { project });
     return;
@@ -280,6 +292,18 @@ async function handleApi(req, res, url, session) {
 
   // Bounded search for the picker. Depth-capped on the server so a request can
   // never turn into a full-disk walk.
+  // Suggestions for the picker. Seeded from the user's home so they can type a
+  // name and find a project without knowing where it lives. Cached server-side,
+  // so this is cheap after the first call.
+  if (req.method === "GET" && path === "/api/suggest") {
+    const all = await suggestProjects();
+    const query = (url.searchParams.get("q") || "").trim();
+    const limit = Math.min(Number(url.searchParams.get("limit") || 8) || 8, 40);
+    const results = query ? filterSuggestions(all, query, limit) : all.slice(0, limit);
+    sendJson(res, 200, { total: all.length, results });
+    return;
+  }
+
   if (req.method === "GET" && path === "/api/search") {
     const root = url.searchParams.get("root");
     if (!root) {
@@ -502,4 +526,52 @@ function redirect(res, location) {
   res.end();
 }
 
-export { sessions, respondentFor };
+/** Expands a leading ~ so a path typed by hand works the same as from the shell. */
+function expandHome(value) {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+  return value;
+}
+
+/**
+ * Subsequence match, shared with the client so a suggestion and a search result
+ * rank the same way. Consecutive characters and word starts score higher, so
+ * "gfq" finds "globalfrontio".
+ */
+function fuzzyScore(text, needle) {
+  const haystack = String(text).toLowerCase();
+  const query = needle.toLowerCase();
+  if (!query) return 1;
+  if (haystack.includes(query)) return 1000 - haystack.indexOf(query);
+
+  let score = 0;
+  let index = 0;
+  let streak = 0;
+  for (const char of query) {
+    const found = haystack.indexOf(char, index);
+    if (found === -1) return 0;
+    if (found === index) streak += 1;
+    else streak = 0;
+    score += 10 + streak * 5;
+    if (found === 0 || /[-_/ ]/.test(haystack[found - 1])) score += 15;
+    index = found + 1;
+  }
+  return score;
+}
+
+function filterSuggestions(items, query, limit) {
+  const scored = [];
+  for (const item of items) {
+    // Match the visible name, and also the trailing path segment, so typing
+    // "projects" can surface a project whose name does not contain it.
+    const score = Math.max(
+      fuzzyScore(item.name, query),
+      fuzzyScore(item.path, query) / 2,
+    );
+    if (score > 0) scored.push({ item, score });
+  }
+  scored.sort((a, b) => b.score - a.score || a.item.depth - b.item.depth);
+  return scored.slice(0, limit).map((entry) => entry.item);
+}
+
+export { sessions, respondentFor, fuzzyScore };

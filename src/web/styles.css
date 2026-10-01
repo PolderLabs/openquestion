@@ -1250,12 +1250,31 @@ a {
   color: var(--text);
 }
 
-#projectSearch {
-  margin-bottom: 8px;
-  font-size: 13.5px;
+.search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
 }
 
-#projectSearch::placeholder {
+.search-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--subtle);
+  pointer-events: none;
+}
+
+.search-input {
+  padding: 11px 13px 11px 34px;
+  font-size: 14px;
+  background: var(--bg);
+}
+
+.search-input:focus {
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.search-input::placeholder {
   color: var(--subtle);
 }
 

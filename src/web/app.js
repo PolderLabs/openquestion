@@ -17,9 +17,8 @@
     "qVersion", "qTitle", "qDescription", "progress", "progressPercent",
     "progressFill", "progressDetail", "toc", "questions",
     "savebar", "saveState", "saveTarget", "reloadBtn", "saveBarBtn",
-    "projectDialog", "defaultDirBlock", "defaultDirPath", "defaultDirBrowse",
-    "defaultDirStatus", "searchBlock", "projectSearch", "searchResults",
-    "searchHint", "browseBlock", "pickerPath", "pickerUp", "pickerList",
+    "projectDialog", "defaultDirBrowse", "defaultDirStatus", "projectSearch",
+    "searchResults", "browseBlock", "pickerPath", "pickerUp", "pickerList",
     "projectGit", "projectSave", "toastDialog", "toastTitle", "toastBody",
   ]) {
     ui[id] = el(id);
@@ -38,8 +37,7 @@
     dirty: false,
     // Picker state, kept across opens so the projects folder is remembered.
     defaultProjectDir: null,
-    searchRoot: null,
-    searchResultsCache: null,
+    suggestCache: null,
     pickedPath: null,
     selectedQuestionnaire: null,
     selectOptions: [],
@@ -111,15 +109,15 @@
    * The dashboard. Shown when no project is selected: every configured project
    * as a card, with enough detail to pick the right one without leaving the
    * page. Choosing a project here is the same action as clicking it in the rail.
+   *
+   * This renders the dashboard only. It must not call showEmpty(), because
+   * showEmpty() calls back into here for the no-project case, and the two would
+   * recurse until the stack blew. Deciding which view is visible is
+   * renderMain()'s job.
    */
   function renderDashboard() {
     const list = ui.dashList;
     list.replaceChildren();
-
-    if (state.projects.length === 0) {
-      showEmpty();
-      return;
-    }
 
     for (const project of state.projects) {
       const card = document.createElement("button");
@@ -513,21 +511,23 @@
   // ---------- rendering ----------
 
   function showEmpty(message) {
-    // Only meaningful when a project is selected but has nothing to show.
-    // With no project selected the dashboard is the right view.
+    ui.questions.replaceChildren();
+    ui.toc.replaceChildren();
+
+    if (message) ui.emptyState.querySelector("p").textContent = message;
+
     if (!state.projectId) {
-      renderDashboard();
+      // No project selected: the dashboard is the view, unless there are no
+      // projects at all, in which case the empty state is.
+      ui.crumbProject.textContent = "Projects";
+      ui.crumbQuestionnaire.textContent = "";
       renderMain();
       return;
     }
-    ui.sheet.hidden = true;
-    ui.dash.hidden = true;
-    ui.emptyState.hidden = false;
-    ui.savebar.hidden = true;
-    ui.questions.replaceChildren();
-    ui.toc.replaceChildren();
+
+    // A project is open but has nothing to show.
     ui.crumbQuestionnaire.textContent = "Select a questionnaire";
-    if (message) ui.emptyState.querySelector("p").textContent = message;
+    renderMain();
   }
 
   function renderQuestionnaire() {
@@ -915,133 +915,84 @@
 
   // ---------- project picker ----------
 
-  // The picker is two steps because the two questions are different: where to
-  // look, and what to add. The projects folder is never pre-filled - the user
-  // points it at an existing directory, and only then does search run.
+  // Suggestions come from the user's home folder, so typing a few letters is
+  // enough. There is no "choose a folder first" step and no need to know a path.
   function openPicker() {
     state.pickedPath = null;
+    state.suggestCache = null;
     ui.projectSave.disabled = true;
-    ui.defaultDirBlock.hidden = false;
-    ui.searchBlock.hidden = true;
     ui.browseBlock.hidden = true;
-    ui.defaultDirPath.value = state.defaultProjectDir || "";
-    ui.defaultDirStatus.textContent = "";
+    ui.browseBlock.open = false;
     ui.projectSearch.value = "";
     ui.searchResults.replaceChildren();
+    setPickerNote("Type a few letters. Searches your home folder.");
     ui.projectDialog.showModal();
-    ui.defaultDirPath.focus();
+    ui.projectSearch.focus();
+    // Show something immediately rather than an empty box, so it is obvious the
+    // field is live before a single character is typed.
+    runSearch();
   }
 
-  /** Validates the chosen folder and, if it is usable, reveals the search step. */
-  async function useDefaultDir() {
-    const raw = ui.defaultDirPath.value.trim().replace(/^~(?=$|\/)/, "");
-    if (!raw) {
-      ui.defaultDirStatus.textContent = "Choose a folder to search.";
-      return;
-    }
-    ui.defaultDirStatus.textContent = "Checking…";
-
-    let listing;
-    try {
-      listing = await api("/api/directories?path=" + encodeURIComponent(raw));
-    } catch (error) {
-      ui.defaultDirStatus.textContent = error.message;
-      return;
-    }
-
-    state.defaultProjectDir = listing.path;
-    state.searchRoot = listing.path;
-    ui.defaultDirStatus.textContent = "Searching " + listing.path;
-    ui.searchBlock.hidden = false;
-    ui.browseBlock.hidden = false;
-    ui.searchHint.textContent = "Scanning…";
-    await loadSearchResults();
-    renderSearchResults(state.searchResultsCache || [], "");
-    ui.projectSearch.focus();
+  function setPickerNote(text) {
+    ui.defaultDirStatus.textContent = text;
   }
 
   let searchTimer = null;
 
-  function scheduleSearch() {
+  function onSearchInput() {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(runSearch, 140);
+    searchTimer = setTimeout(runSearch, 120);
   }
 
-  /**
-   * Fuzzy-matches the query against cached search results. Filtering runs on
-   * whatever the server already returned, so typing is instant and does not
-   * re-walk the filesystem on every keystroke.
-   */
-  function runSearch() {
+  async function runSearch() {
     const query = ui.projectSearch.value.trim();
-    if (!state.searchResultsCache) return;
-    const all = state.searchResultsCache;
-    const ranked = query ? rankMatches(all, query) : all;
-    renderSearchResults(ranked, query);
-  }
-
-  /**
-   * Subsequence match with a bonus for consecutive characters and for matches at
-   * word starts, so "gfq" finds "globalfrontio" and "oq" finds "openquestion"
-   * faster than "oe" would.
-   */
-  function rankMatches(items, query) {
-    const needle = query.toLowerCase();
-    const scored = [];
-    for (const item of items) {
-      const score = fuzzyScore(item.name, needle);
-      if (score > 0) scored.push({ item, score });
-    }
-    scored.sort((a, b) => b.score - a.score || a.item.depth - b.item.depth);
-    return scored.map((entry) => entry.item);
-  }
-
-  function fuzzyScore(text, needle) {
-    const haystack = text.toLowerCase();
-    if (haystack.includes(needle)) {
-      // An exact substring is the strongest signal; earlier is better.
-      return 1000 - haystack.indexOf(needle);
-    }
-    let score = 0;
-    let index = 0;
-    let streak = 0;
-    for (const char of needle) {
-      const found = haystack.indexOf(char, index);
-      if (found === -1) return 0;
-      // Consecutive characters and word starts are worth more.
-      if (found === index) streak += 1;
-      else streak = 0;
-      score += 10 + streak * 5;
-      if (found === 0 || /[-_/ ]/.test(haystack[found - 1])) score += 15;
-      index = found + 1;
-    }
-    return score;
-  }
-
-  async function loadSearchResults() {
-    if (!state.searchRoot) return;
+    setPickerNote("Searching…");
     try {
-      const result = await api("/api/search?root=" + encodeURIComponent(state.searchRoot));
-      state.searchResultsCache = result.results;
-      ui.searchHint.textContent =
-        result.results.length === 0
-          ? "No projects found here."
-          : result.results.length + " found · two levels deep";
+      const result = await api(
+        "/api/suggest?q=" + encodeURIComponent(query) + "&limit=8",
+      );
+      state.suggestCache = result;
+      // A late response must not overwrite what the user has since typed.
+      if (ui.projectSearch.value.trim() !== query) return;
+
+      renderSearchResults(result.results, query);
+      if (result.results.length === 0) {
+        setPickerNote(
+          query
+            ? "No match in your home folder. Try fewer letters, or browse."
+            : `No projects found yet in your home folder.`,
+        );
+      } else if (query) {
+        setPickerNote(
+          result.results.length +
+            " of " +
+            result.total +
+            " project" +
+            (result.total === 1 ? "" : "s"),
+        );
+      } else {
+        setPickerNote(
+          result.total +
+            " project" +
+            (result.total === 1 ? "" : "s") +
+            " found in your home folder",
+        );
+      }
     } catch (error) {
-      state.searchResultsCache = [];
-      ui.searchHint.textContent = error.message;
+      setPickerNote(error.message);
+      renderSearchResults([], query);
     }
   }
+
 
   function renderSearchResults(items, query) {
     ui.searchResults.replaceChildren();
 
     if (items.length === 0) {
+      if (!state.defaultProjectDir) return;
       const empty = document.createElement("p");
       empty.className = "picker-empty";
-      empty.textContent = state.searchResultsCache && state.searchResultsCache.length === 0
-        ? "No projects in this folder. Use Browse folders instead."
-        : "No match. Try part of a name, or use Browse folders.";
+      empty.textContent = "No match. Try part of a name, or browse folders.";
       ui.searchResults.append(empty);
       return;
     }
@@ -1049,7 +1000,8 @@
     for (const item of items) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "picker-item is-project" + (item.path === state.pickedPath ? " is-picked" : "");
+      button.className =
+        "picker-item is-project" + (item.path === state.pickedPath ? " is-picked" : "");
       button.setAttribute("role", "option");
       button.setAttribute("aria-selected", String(item.path === state.pickedPath));
 
@@ -1060,7 +1012,9 @@
       highlightMatch(label, item.name, query);
       const path = document.createElement("span");
       path.className = "picker-sub";
-      path.textContent = item.path;
+      // The immediate parent, not the whole path: two projects can share a
+      // name, and the folder that distinguishes them is the one that matters.
+      path.textContent = item.path.replace(/\/[^/]*$/, "");
 
       button.append(dot, label, path);
       button.addEventListener("click", () => {
@@ -1136,7 +1090,7 @@
   }
 
   async function addSelectedProject() {
-    // A picked search result wins; otherwise the manually browsed path is used,
+    // A picked suggestion wins; otherwise the manually browsed path is used,
     // which is how a folder that is not a project can still be added.
     const path = state.pickedPath || ui.pickerPath.value.trim();
     if (!path) return;
@@ -1149,10 +1103,8 @@
           commitOnWrite: ui.projectGit.checked,
         }),
       });
-      // Remember the folder so the next add starts from the same place.
-      if (state.defaultProjectDir) {
-        await saveDefaultDir(state.defaultProjectDir);
-      }
+      // Remember the folder so the next search starts from the same place.
+      await saveDefaultDir(path);
       ui.projectDialog.close();
       await loadProjects();
       await selectProject(project.id);
@@ -1214,22 +1166,14 @@
 
   ui.addProjectBtn.addEventListener("click", () => openPicker());
 
-  // The projects folder: accept a pasted path, or pick one by browsing.
-  ui.defaultDirPath.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      useDefaultDir();
-    }
-  });
-  ui.defaultDirPath.addEventListener("change", () => useDefaultDir());
+  // One field: it is a folder to search, or a name to search for.
+  ui.projectSearch.addEventListener("input", onSearchInput);
+  ui.projectSearch.addEventListener("change", runSearch);
   ui.defaultDirBrowse.addEventListener("click", async () => {
     ui.browseBlock.hidden = false;
     ui.browseBlock.open = true;
     await browseInto(state.defaultProjectDir || "");
   });
-
-  // Search-as-you-type over the cached results.
-  ui.projectSearch.addEventListener("input", scheduleSearch);
 
   ui.pickerUp.addEventListener("click", async () => {
     const path = ui.pickerPath.value;

@@ -77,6 +77,8 @@ Usage
   oq browse [<path>]
   oq config
   oq update [--check]
+  oq release <patch|minor|major> [--push]
+  oq release status
 
 Bare oq starts the server on port 4731. If oq is already running it
 opens that one in your browser instead of starting a second copy. If the
@@ -94,11 +96,86 @@ Config
 `;
 
 /**
- * Self-update. Only works for an install created by install.sh, which is a git
- * checkout: the command pulls the latest ref and re-verifies that the tree is
- * still parseable. A source checkout someone is working in is left alone unless
- * they pass --force, because resetting it would discard their work.
+ * Releases are git tags (`v0.2.0`), and package.json carries the same number.
+ * The tag is the authority: it is what `oq update` compares against, so a
+ * release is unambiguous even if the two ever disagree.
  */
+
+const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)/;
+
+function parseVersion(text) {
+  const match = SEMVER.exec(String(text || ""));
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+  };
+}
+
+function formatVersion(version) {
+  return `v${version.major}.${version.minor}.${version.patch}`;
+}
+
+function compareVersions(a, b) {
+  return (
+    a.major - b.major || a.minor - b.minor || a.patch - b.patch
+  );
+}
+
+/**
+ * The version of the checkout: its own package.json, annotated with the nearest
+ * tag and the distance to it. A commit past a release reports the commits since,
+ * which is exactly the case where a bare number is ambiguous.
+ */
+async function describeCheckout(root) {
+  const pkg = readVersion(root);
+  const parsed = parseVersion(pkg);
+  const sha = (await run("git", ["rev-parse", "HEAD"], root, true)).trim();
+
+  const described = (
+    await run("git", ["describe", "--tags", "--always", "--dirty"], root, true)
+  ).trim();
+
+  return { version: parsed, raw: pkg, sha, describe: described };
+}
+
+function renderVersion(info) {
+  if (!info.version) return info.raw || "unknown";
+  const base = formatVersion(info.version);
+  // git describe appends -N-g<sha> when HEAD is ahead of the last tag.
+  return info.describe && info.describe !== base
+    ? `${base} (${info.describe})`
+    : base;
+}
+
+/** The newest version tag available on the remote. */
+async function latestRelease(root, branch) {
+  await run("git", ["fetch", "--tags", "--force", "origin"], root, true);
+  const tags = (
+    await run("git", ["tag", "--list", "v*", "--sort=-v:refname"], root, true)
+  )
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const tag of tags) {
+    const parsed = parseVersion(tag);
+    if (parsed) return { tag, parsed };
+  }
+  return null;
+}
+
+/** Whether the current branch already contains the given tag. */
+async function hasTag(root, tag) {
+  const result = await run(
+    "git",
+    ["tag", "--points-at", "HEAD", "--list", tag],
+    root,
+    true,
+  );
+  return result.trim().includes(tag);
+}
 async function cmdUpdate(args) {
   const root = installRoot();
   const gitDir = join(root, ".git");
@@ -142,33 +219,48 @@ async function cmdUpdate(args) {
   }
 
   const before = (await run("git", ["rev-parse", "HEAD"], root)).trim();
-  const currentVersion = readVersion(root);
+  const beforeInfo = await describeCheckout(root);
+
+  // Fetch tags as well as the branch: without them, "latest version" is
+  // unknowable, because a release is a tag rather than a commit.
+  await run("git", ["fetch", "origin", branch, "--tags", "--force"], root, true);
+  const release = await latestRelease(root, branch);
+  const behind = (
+    await run("git", ["rev-list", "--count", `HEAD..origin/${branch}`], root, true)
+  ).trim() || "0";
 
   if (args.includes("--check")) {
-    const { stdout } = await run(
-      "git",
-      ["fetch", "origin", branch],
-      root,
-      true,
-    );
-    const behind = (
-      await run("git", ["rev-list", "--count", `HEAD..origin/${branch}`], root, true)
-    ).trim();
-    console.log(`current: ${currentVersion} (${before.slice(0, 7)})`);
-    if (behind === "0") {
-      console.log("up to date");
+    console.log(`installed  ${renderVersion(beforeInfo)}  (${before.slice(0, 7)})`);
+    if (!release) {
+      console.log("latest     no release tag found on origin");
     } else {
-      console.log(`${behind} commit(s) behind origin/${branch}`);
+      const current = beforeInfo.version;
+      const newer =
+        !current || compareVersions(release.parsed, current) > 0;
+      console.log(`latest     ${release.tag}`);
+      if (!newer) {
+        console.log("\nYou are on the latest release.");
+      } else if (behind !== "0") {
+        console.log(`\nUpdate available: ${behind} commit(s) behind origin/${branch}.`);
+        console.log("Run: oq update");
+      } else {
+        console.log("\nA newer tag exists but your branch already contains it.");
+        console.log("Run: oq update");
+      }
     }
     return;
   }
 
+  if (before === (await run("git", ["rev-parse", "origin/" + branch], root, true)).trim()) {
+    console.log(`Already up to date (${renderVersion(beforeInfo)}).`);
+    return;
+  }
+
   console.log(`Updating ${root} from origin/${branch}...`);
-  await run("git", ["fetch", "origin", branch], root);
   await run("git", ["reset", "--hard", `origin/${branch}`], root);
 
   const after = (await run("git", ["rev-parse", "HEAD"], root)).trim();
-  const nextVersion = readVersion(root);
+  const afterInfo = await describeCheckout(root);
 
   // A broken update would leave the user with no working tool, so check before
   // declaring success.
@@ -187,11 +279,28 @@ async function cmdUpdate(args) {
     );
   }
 
-  if (before === after) {
-    console.log(`Already up to date (${currentVersion}).`);
-    return;
+  const released =
+    release && (await hasTag(root, release.tag));
+  const from = beforeInfo.version;
+  const to = afterInfo.version;
+  const changed =
+    !from || !to ? before !== after : compareVersions(to, from) !== 0;
+
+  if (changed) {
+    const arrow = from && to && compareVersions(to, from) > 0
+      ? formatVersion(from) + " -> " + formatVersion(to)
+      : `${renderVersion(beforeInfo)} -> ${renderVersion(afterInfo)}`;
+    console.log(`\nUpdated ${arrow}`);
+  } else if (before !== after) {
+    // Same version, newer commit: say so plainly instead of implying a release.
+    console.log(`\nUpdated to ${renderVersion(afterInfo)}`);
+    console.log("(same version, newer commits - no new release tag yet)");
+  } else {
+    console.log(`\nAlready up to date (${renderVersion(afterInfo)}).`);
   }
-  console.log(`Updated ${currentVersion} -> ${nextVersion} (${after.slice(0, 7)}).`);
+
+  if (released) console.log(`on release ${release.tag}`);
+
   const log = await run(
     "git",
     ["log", "--oneline", `${before}..${after}`],
@@ -558,6 +667,98 @@ async function cmdConfig(args) {
   console.log(JSON.stringify(config, null, 2));
 }
 
+/**
+ * Cut a release. Bumps package.json, commits, tags, and pushes, so a release is
+ * a single command and the tag can never drift from the manifest.
+ *
+ * `oq release patch|minor|major`  - bump, tag, push
+ * `oq release status`             - show the version, tag, and whether a release
+ *                                    is actually cut for the current commit
+ */
+async function cmdRelease(args) {
+  const root = installRoot();
+  if (!existsSync(join(root, ".git"))) {
+    return fail("oq release must run inside the repository.");
+  }
+
+  const action = args[0] || "status";
+  const currentRaw = readVersion(root);
+  const current = parseVersion(currentRaw);
+  if (!current) return fail(`Cannot parse version from package.json: ${currentRaw}`);
+
+  if (action === "status") {
+    const info = await describeCheckout(root);
+    const release = await latestRelease(root, "main");
+    console.log(`version    ${currentRaw}`);
+    console.log(`latest tag ${release ? release.tag : "(none)"}`);
+    console.log(`describe   ${info.describe}`);
+    if (!release) {
+      // No tag at all: nothing is a release yet, whatever the version says.
+      console.log("state      never released (no tag on origin)");
+      return;
+    }
+    const tagAtHead = await hasTag(root, release.tag);
+    console.log(
+      tagAtHead ? "state      released" : "state      unreleased commits on top of the last tag",
+    );
+    if (info.version && compareVersions(info.version, release.parsed) !== 0) {
+      console.log(
+        `\nwarning    package.json (${currentRaw}) does not match tag ${release.tag}.`,
+      );
+    }
+    return;
+  }
+
+  const bumps = { patch: [0, 0, 1], minor: [0, 1, 0], major: [1, 0, 0] };
+  const bump = bumps[action];
+  if (!bump) {
+    return fail(`Usage: oq release <patch|minor|major|status>`);
+  }
+
+  const status = await run("git", ["status", "--porcelain"], root);
+  if (status.trim()) {
+    return fail(
+      "The working tree is not clean. Commit or stash first, so a tag always\n" +
+        "points at an intentional state.",
+    );
+  }
+
+  const branch = (await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], root)).trim();
+  if (branch === "HEAD") return fail("Detached HEAD; check out a branch first.");
+
+  // Never tag the same version twice: it would make the release ambiguous.
+  const existing = await run("git", ["tag", "--list", "v" + currentRaw], root, true);
+  if (existing.trim()) {
+    return fail(
+      `v${currentRaw} is already tagged.\n` +
+        `Bump package.json first, or use oq release status to see where you are.`,
+    );
+  }
+
+  const next = `${current.major + bump[0]}.${current.minor + bump[1]}.${current.patch + bump[2]}`;
+  const tag = `v${next}`;
+
+  await run("node", [
+    "-e",
+    `const fs=require("fs");const p="package.json";` +
+      `const j=JSON.parse(fs.readFileSync(p,"utf8"));j.version="${next}";` +
+      `fs.writeFileSync(p,JSON.stringify(j,null,2)+"\\n");`,
+  ], root);
+
+  console.log(`bumping ${currentRaw} -> ${next}`);
+  await run("git", ["add", "package.json"], root);
+  await run("git", ["commit", "-m", `release: ${tag}`], root);
+  await run("git", ["tag", "-a", tag, "-m", tag], root);
+
+  if (args.includes("--push")) {
+    await run("git", ["push", "origin", branch, "--follow-tags"], root);
+    console.log(`pushed ${tag}`);
+  } else {
+    console.log(`tagged ${tag} locally. Push it with:`);
+    console.log(`  git -C ${root} push origin ${branch} --follow-tags`);
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
 
@@ -573,7 +774,7 @@ async function main() {
   // so the command needs no project argument and does not care which directory
   // it was run from. `oq --port 1234` is `oq serve --port 1234`.
   const KNOWN = new Set([
-    "serve", "projects", "browse", "config", "update", "help",
+    "serve", "projects", "browse", "config", "update", "release", "help",
   ]);
   // A leading flag means serve. A bare word that is not a command is a typo,
   // and silently starting a server would hide it.
@@ -597,6 +798,8 @@ async function main() {
       return cmdConfig(args);
     case "update":
       return cmdUpdate(args);
+    case "release":
+      return cmdRelease(args);
     case "--version":
     case "-v":
       return console.log(VERSION);
