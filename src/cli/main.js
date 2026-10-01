@@ -233,21 +233,39 @@ async function cmdUpdate(args) {
     console.log(`installed  ${renderVersion(beforeInfo)}  (${before.slice(0, 7)})`);
     if (!release) {
       console.log("latest     no release tag found on origin");
-    } else {
-      const current = beforeInfo.version;
-      const newer =
-        !current || compareVersions(release.parsed, current) > 0;
-      console.log(`latest     ${release.tag}`);
-      if (!newer) {
-        console.log("\nYou are on the latest release.");
-      } else if (behind !== "0") {
-        console.log(`\nUpdate available: ${behind} commit(s) behind origin/${branch}.`);
-        console.log("Run: oq update");
-      } else {
-        console.log("\nA newer tag exists but your branch already contains it.");
+      if (behind !== "0") {
+        console.log(`\n${behind} commit(s) on origin/${branch} are not released yet.`);
         console.log("Run: oq update");
       }
+      return;
     }
+
+    const current = beforeInfo.version;
+    const newer = !current || compareVersions(release.parsed, current) > 0;
+    console.log(`latest     ${release.tag}`);
+
+    if (!newer) {
+      console.log("\nYou are on the latest release.");
+      return;
+    }
+
+    // Count distance from the installed commit to the release commit, not to
+    // the branch tip. On a detached HEAD (a tag checkout) there is no local
+    // branch to be behind, and comparing against the tip would wrongly report
+    // "already contains it".
+    const releaseSha = (
+      await run("git", ["rev-list", "-n", "1", release.tag], root, true)
+    ).trim();
+    const toRelease = (
+      await run("git", ["rev-list", "--count", `${before}..${release.tag}`], root, true)
+    ).trim() || "0";
+
+    console.log(
+      `\nUpdate available: ${release.tag}` +
+        (toRelease !== "0" ? ` (${toRelease} commit(s) away)` : ""),
+    );
+    console.log(`installed ${formatVersion(current)}, latest ${release.tag}.`);
+    if (releaseSha && before !== releaseSha) console.log("Run: oq update");
     return;
   }
 
@@ -256,8 +274,43 @@ async function cmdUpdate(args) {
     return;
   }
 
-  console.log(`Updating ${root} from origin/${branch}...`);
-  await run("git", ["reset", "--hard", `origin/${branch}`], root);
+  // A checkout sitting on a tag has a detached HEAD, and resetting one would
+  // leave it stranded. Move it back onto the tracked branch first.
+  let target = branch;
+  if (branch === "HEAD") {
+    const remoteHead = (
+      await run("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], root, true)
+    ).trim();
+    target = remoteHead
+      ? remoteHead.replace(/^origin\//, "")
+      : (
+          await run("git", ["remote", "show", "origin"], root, true)
+        )
+        .split("\n")
+        .find((line) => line.includes("HEAD branch:"))
+        ?.split(":")[1]
+        ?.trim();
+
+    if (!target) {
+      return fail(
+        "This checkout has a detached HEAD and no default branch could be\n" +
+          "determined. Re-run the installer instead:\n" +
+          "  curl -fsSL https://raw.githubusercontent.com/PolderLabs/openquestion/main/install.sh | sh",
+      );
+    }
+
+    console.log(`Detached HEAD; moving onto ${target}.`);
+    const checkout = await run("git", ["checkout", target], root, true);
+    if (!checkout.ok) {
+      return fail(
+        `Could not move the detached checkout onto ${target}.\n` +
+          "Re-run the installer instead.",
+      );
+    }
+  } else {
+    console.log(`Updating ${root} from origin/${target}...`);
+  }
+  await run("git", ["reset", "--hard", `origin/${target}`], root);
 
   const after = (await run("git", ["rev-parse", "HEAD"], root)).trim();
   const afterInfo = await describeCheckout(root);
