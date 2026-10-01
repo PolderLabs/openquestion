@@ -16,21 +16,52 @@ No dependencies. Node 20+.
 ## Install
 
 ```bash
-git clone git@github.com:PolderLabs/openquestion.git
-cd openquestion
+curl -fsSL https://raw.githubusercontent.com/PolderLabs/openquestion/main/install.sh | sh
 ```
 
-Or run it without installing:
+That installs to `~/.local/share/openquestion` and puts an `oq` launcher in
+`~/.local/bin`. It clones through `gh` when you are signed in, so a private
+repository works without extra steps; otherwise it falls back to a plain `git
+clone`.
+
+Add the launcher to your PATH if it is not already:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Overrides:
+
+```bash
+curl -fsSL .../install.sh | PREFIX=/opt sh      # install elsewhere
+curl -fsSL .../install.sh | REPO=owner/name sh  # fork or mirror
+curl -fsSL .../install.sh | VERSION=v0.1.0 sh   # pin a release
+```
+
+Or run it straight from a clone, with no install at all:
 
 ```bash
 node src/cli/main.js serve
 ```
 
+### Updating
+
+```bash
+oq update           # pull the latest commit
+oq update --check   # report the current version and how far behind it is
+```
+
+`oq update` only manages directories it installed — it looks for the
+`.openquestion-install` marker that `install.sh` writes. Run from a clone you are
+working in, it refuses rather than resetting your tree; use `git pull` there. It
+also refuses to run over uncommitted changes unless you pass `--force`, checks
+that the new tree still parses, and prints a rollback command if it does not.
+
 ## Start
 
 ```bash
-openquestion serve
-# openquestion serve --port 4321 --project ~/code/my-project
+oq serve
+# oq serve --port 4321 --project ~/code/my-project
 ```
 
 Then open <http://127.0.0.1:4321>.
@@ -40,16 +71,16 @@ path for a one-off run or an agent.
 
 ## Projects
 
-A project is a directory containing questionnaires. openquestion finds them three
+A project is a directory containing questionnaires. oq finds them three
 ways:
 
 ```bash
-openquestion projects add ~/code/my-project   # explicit
-openquestion projects add ~/code --scan ~/code # plus auto-discover siblings
-openquestion projects discover ~/code         # see what looks like a project
-openquestion projects list
-openquestion projects remove my-project
-openquestion browse ~/code                    # list folders, mark the projects
+oq projects add ~/code/my-project   # explicit
+oq projects add ~/code --scan ~/code # plus auto-discover siblings
+oq projects discover ~/code         # see what looks like a project
+oq projects list
+oq projects remove my-project
+oq browse ~/code                    # list folders, mark the projects
 ```
 
 A folder counts as a project if it contains any of:
@@ -90,7 +121,7 @@ file. Nothing is ever pushed.
 This is the mode to use from a local agent:
 
 ```bash
-openquestion serve --project /path/to/repo
+oq serve --project /path/to/repo
 # or drive the HTTP API directly
 curl -s localhost:4321/api/manifest
 curl -s -X PUT localhost:4321/api/answers -H 'content-type: application/json' -d '{
@@ -107,7 +138,7 @@ curl -s -X PUT localhost:4321/api/answers -H 'content-type: application/json' -d
 Register a repo-backed project:
 
 ```bash
-openquestion projects add ~/code/my-project --github PolderLabs/globalfrontio \
+oq projects add ~/code/my-project --github PolderLabs/globalfrontio \
   --branch main --manifest questionnaire/questionnaires/index.json
 ```
 
@@ -119,7 +150,7 @@ Authenticate either way:
   where there is no browser to click through.
 
 ```bash
-GITHUB_TOKEN=$(gh auth token) openquestion serve
+GITHUB_TOKEN=$(gh auth token) oq serve
 ```
 
 The token never reaches the browser. The server keeps it and the client only
