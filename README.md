@@ -20,9 +20,9 @@ curl -fsSL https://raw.githubusercontent.com/PolderLabs/openquestion/main/instal
 ```
 
 That installs to `~/.local/share/openquestion` and puts an `oq` launcher in
-`~/.local/bin`. It clones through `gh` when you are signed in, so a private
-repository works without extra steps; otherwise it falls back to a plain `git
-clone`.
+`~/.local/bin`. No account and no GitHub credentials are needed. If you happen to
+be signed in with `gh`, the installer uses it; otherwise it falls back to a plain
+`git clone`.
 
 Add the launcher to your PATH if it is not already:
 
@@ -38,9 +38,11 @@ curl -fsSL .../install.sh | REPO=owner/name sh  # fork or mirror
 curl -fsSL .../install.sh | VERSION=v0.1.0 sh   # pin a release
 ```
 
-Or run it straight from a clone, with no install at all:
+Or clone it yourself, with no install at all:
 
 ```bash
+git clone https://github.com/PolderLabs/openquestion.git
+cd openquestion
 node src/cli/main.js serve
 ```
 

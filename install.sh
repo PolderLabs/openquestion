@@ -3,12 +3,12 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/PolderLabs/openquestion/main/install.sh | sh
 #
-# With gh authenticated (works for a private repo):
-#   curl -fsSL https://raw.githubusercontent.com/PolderLabs/openquestion/main/install.sh | sh -s -- --gh
+# The repository is public, so no account or token is required. If you are
+# signed in with gh it is used opportunistically; otherwise a plain git clone
+# is enough.
 #
-# Or explicitly:
-#   curl -fsSL https://raw.githubusercontent.com/PolderLabs/openquestion/main/install.sh \
-#     | REPO=owner/name sh
+# To install from a private fork or mirror:
+#   curl -fsSL .../install.sh | REPO=owner/name sh
 #
 # Environment:
 #   REPO     owner/name to install from        (default PolderLabs/openquestion)
@@ -41,15 +41,15 @@ fetch_repo() {
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     info "cloning $REPO via gh"
     gh repo clone "$REPO" "$INSTALL_DIR" -- --depth 1 --branch "$REF" >/dev/null 2>&1 && return 0
-    info "gh clone failed, trying public clone"
+    info "gh clone failed, falling back to a public clone"
   fi
   info "cloning $REPO via git"
   git clone --depth 1 --branch "$REF" "https://github.com/$REPO.git" "$INSTALL_DIR" >/dev/null 2>&1 \
     || die "could not clone $REPO at $REF.
-    If this repository is private, sign in first:
+    If $REPO is private, sign in first:
       gh auth login
-    or re-run with a token:
-      GIT_TERMINAL_PROMPT=0 git clone https://x-access-token:\$TOKEN@github.com/$REPO.git"
+    or use a token:
+      REPO=owner/name with a reachable HTTPS clone."
 }
 
 verify_version() {
